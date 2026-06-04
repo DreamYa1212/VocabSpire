@@ -1,0 +1,70 @@
+namespace VocabSpire.Models;
+
+/// <summary>SM-2 记忆状态。</summary>
+public enum SrsState
+{
+    New,
+    Learning,
+    Review,
+    Relearning
+}
+
+/// <summary>SM-2 评分等级。</summary>
+public enum SrsGrade
+{
+    Again = 0,  // 完全忘记
+    Hard  = 1,  // 困难（勉强想起）
+    Good  = 2,  // 一般（正常回忆）
+    Easy  = 3   // 容易（毫不费力）
+}
+
+public sealed class WordEntry
+{
+    public string English { get; init; } = "";
+    public string Chinese { get; init; } = "";
+    public string Phonetic { get; init; } = "";
+    public List<string> Definitions { get; init; } = new();
+
+    public bool HasMultipleDefinitions => Definitions.Count > 1;
+    public bool HasPhonetic => !string.IsNullOrWhiteSpace(Phonetic);
+
+    public int CorrectCount { get; set; }
+    public int WrongCount { get; set; }
+
+    /// <summary>当前连续答对次数（答错归零）。</summary>
+    public int Streak { get; set; }
+
+    /// <summary>因答错该词损失的总能量。</summary>
+    public int EnergyLost { get; set; }
+
+    // ── SM-2 算法字段 ──
+
+    /// <summary>SM-2 记忆状态。</summary>
+    public SrsState SrsState { get; set; } = SrsState.New;
+
+    /// <summary>难度系数 (Ease Factor)。默认 2.5，最小 1.3。</summary>
+    public float EaseFactor { get; set; } = 2.5f;
+
+    /// <summary>复习间隔（天）。</summary>
+    public int IntervalDays { get; set; }
+
+    /// <summary>连续答对次数（SM-2 的 n，与 Streak 不同：只有 Good/Easy 才递增）。</summary>
+    public int Repetitions { get; set; }
+
+    /// <summary>下次到期日期（UTC ticks）。0 表示即时待复习。</summary>
+    public long DueDateTicks { get; set; }
+
+    /// <summary>上次复习日期（UTC ticks）。0 表示从未复习。</summary>
+    public long LastReviewTicks { get; set; }
+
+    /// <summary>当前是否到期。</summary>
+    public bool IsDue => DueDateTicks == 0
+        || new DateTime(DueDateTicks, DateTimeKind.Utc) <= DateTime.UtcNow;
+
+    /// <summary>学习步长计数器（0-based，最大 = LearningSteps.Length - 1）。</summary>
+    public int LearningStepIndex { get; set; }
+
+    public float Accuracy => (CorrectCount + WrongCount) == 0
+        ? 0f
+        : (float)CorrectCount / (CorrectCount + WrongCount);
+}
