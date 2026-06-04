@@ -216,6 +216,10 @@ public sealed class VocabManager
         // 检测新局开始，清空已测试词记录
         DetectRunBoundary();
 
+        // SRS 模式：使用 SM-2 优先级出题
+        if (VocabConfig.Instance.EnableSrsMode)
+            return GenerateQuizSrs();
+
         var tier = VocabConfig.Instance.EnableDifficultyScaling
             ? Math.Clamp(GameBridge.GetCurrentAct(), 1, 3)
             : 1;
@@ -271,6 +275,85 @@ public sealed class VocabManager
             _activeBank, modes, cfg.OptionCount, tier);
     }
 
+    /// <summary>
+    /// SRS 模式出题：按 SM-2 优先级（Relearning > Due Review > New）选词。
+    /// 同时处理断签堆积，每日新词限流。
+    /// </summary>
+    public QuizQuestion? GenerateQuizSrs()
+    {
+        if (_activeBank is null || !_activeBank.IsValid) return null;
+
+        DetectRunBoundary();
+
+        var cfg = VocabConfig.Instance;
+        var tier = cfg.EnableDifficultyScaling
+            ? Math.Clamp(GameBridge.GetCurrentAct(), 1, 3)
+            : 1;
+        var modes = cfg.GetModesForAct(tier);
+
+        var now = DateTime.UtcNow;
+        var words = _activeBank.Words;
+
+        // ── 优先级队列 ──
+        // 1. Relearning / Learning Due（最紧急：Again 词、学习中到期词）
+        var relearningPool = words
+            .Where(w => w.SrsState is SrsState.Relearning or SrsState.Learning && w.IsDue)
+            .OrderBy(w => w.DueDateTicks)
+            .ToList();
+
+        if (relearningPool.Count >= 2)
+            return _quizGenerator.Generate(_activeBank, relearningPool, modes, cfg.OptionCount, tier);
+
+        // 2. Review Due（今天到期的复习词）
+        var reviewDuePool = words
+            .Where(w => w.SrsState == SrsState.Review && SrsScheduler.IsDueToday(w, now))
+            .OrderBy(w => w.DueDateTicks)
+            .ToList();
+
+        if (reviewDuePool.Count >= 2)
+            return _quizGenerator.Generate(_activeBank, reviewDuePool, modes, cfg.OptionCount, tier);
+
+        // 3. New words（新词，每日限流）
+        var newWords = words
+            .Where(w => w.SrsState == SrsState.New)
+            .ToList();
+
+        if (newWords.Count > 0)
+        {
+            // 每日新词上限（默认 20）
+            var maxNewPerDay = cfg.MaxNewWordsPerDay > 0 ? cfg.MaxNewWordsPerDay : 20;
+            var todayNewCount = words.Count(w =>
+                w.SrsState != SrsState.New && new DateTime(w.LastReviewTicks, DateTimeKind.Utc).Date == now.Date
+                && w.Repetitions == 0); // Repetitions=0 表示首次学习
+
+            if (todayNewCount < maxNewPerDay && newWords.Count >= 2)
+                return _quizGenerator.Generate(_activeBank, newWords, modes, cfg.OptionCount, tier);
+
+            // 今日新词已达上限，降级到 Review Due
+            if (reviewDuePool.Count >= 2)
+                return _quizGenerator.Generate(_activeBank, reviewDuePool, modes, cfg.OptionCount, tier);
+        }
+
+        // 4. 实在没有：任意未到期 Review 词（摊还）
+        var anyReview = words
+            .Where(w => w.SrsState == SrsState.Review)
+            .OrderBy(w => w.DueDateTicks)
+            .ToList();
+        if (anyReview.Count >= 2)
+            return _quizGenerator.Generate(_activeBank, anyReview, modes, cfg.OptionCount, tier);
+
+        // 5. 回退：任意已有进度的词
+        var anyProgress = words
+            .Where(w => w.SrsState != SrsState.New)
+            .OrderBy(w => w.DueDateTicks)
+            .ToList();
+        if (anyProgress.Count >= 2)
+            return _quizGenerator.Generate(_activeBank, anyProgress, modes, cfg.OptionCount, tier);
+
+        // 6. 最终回退：正常出题
+        return _quizGenerator.Generate(_activeBank, modes, cfg.OptionCount, tier);
+    }
+
     public void RecordAnswer(WordEntry word, bool correct)
     {
         if (correct)
@@ -309,14 +392,33 @@ public sealed class VocabManager
     {
         try
         {
-            var data = new Dictionary<string, int[]>();
+            var data = new Dictionary<string, Dictionary<string, object>>();
             foreach (var bank in _banks)
             {
                 foreach (var w in bank.Words)
                 {
-                    if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0) continue;
+                    // 跳过无任何进度的词
+                    if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0
+                        && w.SrsState == SrsState.New && w.EaseFactor == SrsScheduler.DefaultEaseFactor)
+                        continue;
+
                     var key = w.English.ToLowerInvariant();
-                    data[key] = new[] { w.CorrectCount, w.WrongCount, w.EnergyLost, w.Streak };
+                    var entry = new Dictionary<string, object>
+                    {
+                        ["cc"] = w.CorrectCount,
+                        ["wc"] = w.WrongCount,
+                        ["el"] = w.EnergyLost,
+                        ["st"] = w.Streak,
+                        // SM-2 fields
+                        ["srs"] = (int)w.SrsState,
+                        ["ef"] = w.EaseFactor,
+                        ["iv"] = w.IntervalDays,
+                        ["rp"] = w.Repetitions,
+                        ["dd"] = w.DueDateTicks,
+                        ["lr"] = w.LastReviewTicks,
+                        ["ls"] = w.LearningStepIndex
+                    };
+                    data[key] = entry;
                 }
             }
             var json = System.Text.Json.JsonSerializer.Serialize(data,
@@ -336,28 +438,71 @@ public sealed class VocabManager
             if (!File.Exists(ProgressFilePath)) return;
 
             var json = File.ReadAllText(ProgressFilePath);
-            var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int[]>>(json);
-            if (data is null) return;
-
-            foreach (var bank in _banks)
+            // 尝试新格式 (Dictionary<string, object>)，失败则回退旧格式 (int[])
+            try
             {
-                foreach (var w in bank.Words)
-                {
-                    var key = w.English.ToLowerInvariant();
-                    if (!data.TryGetValue(key, out var stats)) continue;
-                    w.CorrectCount = stats.Length > 0 ? stats[0] : 0;
-                    w.WrongCount = stats.Length > 1 ? stats[1] : 0;
-                    w.EnergyLost = stats.Length > 2 ? stats[2] : 0;
-                    w.Streak = stats.Length > 3 ? stats[3] : 0;
-                }
-            }
+                var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>>(json);
+                if (data is null) return;
 
-            Log.Info($"[VocabSpire] Loaded progress for {data.Count} words.");
+                foreach (var bank in _banks)
+                {
+                    foreach (var w in bank.Words)
+                    {
+                        var key = w.English.ToLowerInvariant();
+                        if (!data.TryGetValue(key, out var entry)) continue;
+
+                        w.CorrectCount = entry.TryGetValue("cc", out var cc) && cc.TryGetInt32(out var ccv) ? ccv : 0;
+                        w.WrongCount = entry.TryGetValue("wc", out var wc) && wc.TryGetInt32(out var wcv) ? wcv : 0;
+                        w.EnergyLost = entry.TryGetValue("el", out var el) && el.TryGetInt32(out var elv) ? elv : 0;
+                        w.Streak = entry.TryGetValue("st", out var st) && st.TryGetInt32(out var stv) ? stv : 0;
+                        // SM-2 fields (optional, default if missing for backward compat)
+                        w.SrsState = entry.TryGetValue("srs", out var srs) && srs.TryGetInt32(out var srsv)
+                            ? (SrsState)srsv : SrsState.New;
+                        w.EaseFactor = entry.TryGetValue("ef", out var ef) && ef.TryGetSingle(out var efv)
+                            ? efv : SrsScheduler.DefaultEaseFactor;
+                        w.IntervalDays = entry.TryGetValue("iv", out var iv) && iv.TryGetInt32(out var ivv) ? ivv : 0;
+                        w.Repetitions = entry.TryGetValue("rp", out var rp) && rp.TryGetInt32(out var rpv) ? rpv : 0;
+                        w.DueDateTicks = entry.TryGetValue("dd", out var dd) && dd.TryGetInt64(out var ddv) ? ddv : 0;
+                        w.LastReviewTicks = entry.TryGetValue("lr", out var lr) && lr.TryGetInt64(out var lrv) ? lrv : 0;
+                        w.LearningStepIndex = entry.TryGetValue("ls", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 0;
+                    }
+                }
+
+                Log.Info($"[VocabSpire] Loaded SRS progress for {data.Count} words.");
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                // 回退旧格式：int[] 兼容
+                LoadProgressLegacy(json);
+            }
         }
         catch (Exception ex)
         {
             Log.Error($"[VocabSpire] Failed to load progress: {ex.Message}");
         }
+    }
+
+    /// <summary>兼容旧版 int[] 格式的进度加载。</summary>
+    private void LoadProgressLegacy(string json)
+    {
+        var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int[]>>(json);
+        if (data is null) return;
+
+        foreach (var bank in _banks)
+        {
+            foreach (var w in bank.Words)
+            {
+                var key = w.English.ToLowerInvariant();
+                if (!data.TryGetValue(key, out var stats)) continue;
+                w.CorrectCount = stats.Length > 0 ? stats[0] : 0;
+                w.WrongCount = stats.Length > 1 ? stats[1] : 0;
+                w.EnergyLost = stats.Length > 2 ? stats[2] : 0;
+                w.Streak = stats.Length > 3 ? stats[3] : 0;
+                // 旧格式无 SM-2 数据，保持默认值
+            }
+        }
+
+        Log.Info($"[VocabSpire] Loaded legacy progress for {data.Count} words.");
     }
 
     private void DetectRunBoundary()

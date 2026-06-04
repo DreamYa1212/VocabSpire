@@ -103,6 +103,13 @@ public sealed class VocabConfig
     /// <summary>听力发音音量（0-100，独立于游戏音量）。</summary>
     public int TtsVolume { get; set; } = 80;
 
+    // ── SM-2 / SRS 设置 ──
+    /// <summary>启用 SRS 调度模式（按 SM-2 算法优先级出题）。关闭后使用原有加权随机出题。</summary>
+    public bool EnableSrsMode { get; set; }
+
+    /// <summary>SRS 模式下每日新词上限（0=不限制）。</summary>
+    public int MaxNewWordsPerDay { get; set; } = 20;
+
     /// <summary>本局游戏固定单词数量（0=不启用）。开启后整局从随机选出的这批词中出题。</summary>
     public int RunFixedWordCount { get; set; }
 

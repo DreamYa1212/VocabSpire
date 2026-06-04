@@ -308,6 +308,24 @@ public partial class VocabSettingsPanel : Control
             "开启后 Act 2+ 的拼写题只从本局已出过的词中选取", 16, DimGrey);
         _perActContainer.AddChild(reviewDesc);
 
+        // ── SRS / SM-2 调度开关 ──
+        var srsToggle = new CheckButton
+        {
+            Text = " SRS 智能调度 (SM-2 算法)",
+            ButtonPressed = cfg.EnableSrsMode
+        };
+        srsToggle.AddThemeFontSizeOverride("font_size", 13);
+        srsToggle.Toggled += on =>
+        {
+            VocabConfig.Instance.EnableSrsMode = on;
+            VocabConfig.Instance.Save();
+        };
+        _perActContainer.AddChild(srsToggle);
+
+        var srsDesc = GameTheme.MakeLabel(
+            "按艾宾浩斯遗忘曲线动态调整复习间隔，优先复习遗忘词", 16, DimGrey);
+        _perActContainer.AddChild(srsDesc);
+
         // 答题按键（自定义提交 / 继续键；选项键固定 A-H / 1-8）
         vbox.AddChild(GameTheme.MakeLabel("-- 答题按键 --", 22, SectionColor));
 
