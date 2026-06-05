@@ -308,23 +308,101 @@ public partial class VocabSettingsPanel : Control
             "开启后 Act 2+ 的拼写题只从本局已出过的词中选取", 16, DimGrey);
         _perActContainer.AddChild(reviewDesc);
 
-        // ── SRS / SM-2 调度开关 ──
+        // ── SRS / SM-2 调度（独立于分层模式，始终可见）──
+        vbox.AddChild(GameTheme.MakeLabel("-- SRS 智能调度 --", 22, SectionColor));
+
         var srsToggle = new CheckButton
         {
             Text = " SRS 智能调度 (SM-2 算法)",
             ButtonPressed = cfg.EnableSrsMode
         };
         srsToggle.AddThemeFontSizeOverride("font_size", 13);
-        srsToggle.Toggled += on =>
-        {
-            VocabConfig.Instance.EnableSrsMode = on;
-            VocabConfig.Instance.Save();
-        };
-        _perActContainer.AddChild(srsToggle);
+        vbox.AddChild(srsToggle);
 
         var srsDesc = GameTheme.MakeLabel(
             "按艾宾浩斯遗忘曲线动态调整复习间隔，优先复习遗忘词", 16, DimGrey);
-        _perActContainer.AddChild(srsDesc);
+        vbox.AddChild(srsDesc);
+
+        // SRS 子选项容器（仅 SRS 开启时可见）
+        var srsSubContainer = new VBoxContainer();
+        srsSubContainer.AddThemeConstantOverride("separation", 4);
+        srsSubContainer.Visible = cfg.EnableSrsMode;
+        vbox.AddChild(srsSubContainer);
+
+        srsToggle.Toggled += on =>
+        {
+            VocabConfig.Instance.EnableSrsMode = on;
+            srsSubContainer.Visible = on;
+            VocabConfig.Instance.Save();
+        };
+
+        // 退休阈值
+        var retirementRow = new HBoxContainer();
+        retirementRow.AddThemeConstantOverride("separation", 10);
+        srsSubContainer.AddChild(retirementRow);
+        retirementRow.AddChild(GameTheme.MakeLabel("  退休阈值（天）：", 13, White));
+
+        var retirementInput = new SpinBox
+        {
+            MinValue = 0, MaxValue = 999, Step = 30,
+            Value = cfg.SrsMaxIntervalDays,
+            CustomMinimumSize = new Vector2(80, 0)
+        };
+        retirementInput.ValueChanged += val =>
+        {
+            VocabConfig.Instance.SrsMaxIntervalDays = (int)val;
+            VocabConfig.Instance.Save();
+        };
+        retirementRow.AddChild(retirementInput);
+
+        var retirementDesc = GameTheme.MakeLabel(
+            "  间隔超过此天数自动标记为「已掌握」，不再出题。0=永不退休", 12, DimGrey);
+        srsSubContainer.AddChild(retirementDesc);
+
+        // SRS 评分后自动继续
+        var autoContinueToggle = new CheckButton
+        {
+            Text = " 评分后自动继续（跳过确认按钮）",
+            ButtonPressed = cfg.SrsAutoContinue
+        };
+        autoContinueToggle.AddThemeFontSizeOverride("font_size", 13);
+        autoContinueToggle.Toggled += on =>
+        {
+            VocabConfig.Instance.SrsAutoContinue = on;
+            VocabConfig.Instance.Save();
+        };
+        srsSubContainer.AddChild(autoContinueToggle);
+
+        // ── 快捷操作（始终可见）──
+        vbox.AddChild(GameTheme.MakeLabel("-- 快捷操作 --", 22, SectionColor));
+
+        // 答对自动继续（SRS + 非 SRS 通用）
+        var autoCorrectToggle = new CheckButton
+        {
+            Text = " 仅答对时自动继续（答错仍需手动确认）",
+            ButtonPressed = cfg.SrsAutoContinueCorrectOnly
+        };
+        autoCorrectToggle.AddThemeFontSizeOverride("font_size", 13);
+        autoCorrectToggle.Toggled += on =>
+        {
+            VocabConfig.Instance.SrsAutoContinueCorrectOnly = on;
+            VocabConfig.Instance.Save();
+        };
+        vbox.AddChild(autoCorrectToggle);
+
+        var autoSubmitToggle = new CheckButton
+        {
+            Text = " 选择题选对自动提交（无需点提交按钮 + 自动继续）",
+            ButtonPressed = cfg.AutoSubmitCorrect
+        };
+        autoSubmitToggle.AddThemeFontSizeOverride("font_size", 13);
+        autoSubmitToggle.Toggled += on =>
+        {
+            VocabConfig.Instance.AutoSubmitCorrect = on;
+            VocabConfig.Instance.Save();
+        };
+        vbox.AddChild(autoSubmitToggle);
+        vbox.AddChild(autoSubmitToggle);
 
         // 答题按键（自定义提交 / 继续键；选项键固定 A-H / 1-8）
         vbox.AddChild(GameTheme.MakeLabel("-- 答题按键 --", 22, SectionColor));
@@ -526,29 +604,6 @@ public partial class VocabSettingsPanel : Control
 
         var cfg = VocabConfig.Instance;
 
-        // ── 本局固定单词数量 ──
-        var runRow = new HBoxContainer();
-        runRow.AddThemeConstantOverride("separation", 8);
-        vbox.AddChild(runRow);
-        runRow.AddChild(GameTheme.MakeLabel("本局固定单词数量：", 16, White));
-
-        var runCountInput = new SpinBox
-        {
-            MinValue = 0,
-            MaxValue = 9999,
-            Step = 1,
-            Value = cfg.RunFixedWordCount,
-            CustomMinimumSize = new Vector2(120, 0)
-        };
-        runCountInput.GetLineEdit().AddThemeFontSizeOverride("font_size", 14);
-        runCountInput.ValueChanged += val =>
-        {
-            VocabConfig.Instance.RunFixedWordCount = (int)val;
-            VocabConfig.Instance.Save();
-        };
-        runRow.AddChild(runCountInput);
-        runRow.AddChild(GameTheme.MakeLabel("（0=不启用。开启后本局随机选出这些词，整局始终从这些词出题）", 12, DimGrey));
-
         // ── 本场战斗固定单词数量 ──
         var combatRow = new HBoxContainer();
         combatRow.AddThemeConstantOverride("separation", 8);
@@ -572,28 +627,93 @@ public partial class VocabSettingsPanel : Control
         combatRow.AddChild(combatCountInput);
         combatRow.AddChild(GameTheme.MakeLabel("（0=默认。设置后在每场战斗开始时从词池中随机选出指定数量的单词）", 12, DimGrey));
 
-        // ── 重掷按钮 ──
+        // ── 重掷 / 预览按钮 ──
         var rerollRow = new HBoxContainer();
         rerollRow.AddThemeConstantOverride("separation", 12);
         vbox.AddChild(rerollRow);
 
-        var rerollRunBtn = GameTheme.MakeButton("  重掷本局词池  ", 14);
-        rerollRunBtn.TooltipText = "重新随机选取本局固定单词（仅在已设置本局固定单词数量时有效）";
-        rerollRunBtn.Pressed += () =>
-        {
-            VocabManager.Instance.RerollRunFixedWordPool();
-            Log.Info("[VocabSpire] Run word pool rerolled by user.");
-        };
-        rerollRow.AddChild(rerollRunBtn);
-
         var rerollCombatBtn = GameTheme.MakeButton("  重掷本场战斗词池  ", 14);
-        rerollCombatBtn.TooltipText = "重新随机选取本场战斗固定单词（仅在已设置本场战斗固定单词数量时有效）";
         rerollCombatBtn.Pressed += () =>
         {
             VocabManager.Instance.RerollCombatFixedWordPool();
             Log.Info("[VocabSpire] Combat word pool rerolled by user.");
         };
         rerollRow.AddChild(rerollCombatBtn);
+
+        var previewCombatBtn = GameTheme.MakeButton("  预览本场词池  ", 14);
+        previewCombatBtn.Pressed += () =>
+        {
+            var pool = VocabManager.Instance.GetCombatFixedWordPool();
+            if (pool is { Count: > 0 })
+                QuizPanel.Instance?.ShowPoolPreview($"本场战斗词池 ({pool.Count} 词)", pool);
+        };
+        rerollRow.AddChild(previewCombatBtn);
+
+        // 预览开关
+        var previewToggle = new CheckButton
+        {
+            Text = " 开局/战斗开始自动显示词池",
+            ButtonPressed = cfg.ShowPoolPreview
+        };
+        previewToggle.AddThemeFontSizeOverride("font_size", 13);
+        previewToggle.Toggled += on =>
+        {
+            VocabConfig.Instance.ShowPoolPreview = on;
+            VocabConfig.Instance.Save();
+        };
+        vbox.AddChild(previewToggle);
+
+        // ── 分组记忆 ──
+        vbox.AddChild(GameTheme.MakeLabel("-- 分组记忆 --", 22, SectionColor));
+
+        var groupRow = new HBoxContainer();
+        groupRow.AddThemeConstantOverride("separation", 10);
+        vbox.AddChild(groupRow);
+        groupRow.AddChild(GameTheme.MakeLabel("每组单词数：", 13, White));
+
+        var groupSizeInput = new SpinBox
+        {
+            MinValue = 0, MaxValue = 500, Step = 10,
+            Value = cfg.GroupSize,
+            CustomMinimumSize = new Vector2(80, 0)
+        };
+        groupSizeInput.ValueChanged += val =>
+        {
+            VocabConfig.Instance.GroupSize = (int)val;
+            VocabConfig.Instance.Save();
+            VocabManager.Instance.RegenerateGroups();
+        };
+        groupRow.AddChild(groupSizeInput);
+
+        groupRow.AddChild(GameTheme.MakeLabel($"（当前词库 {VocabManager.Instance.ActiveBank?.TotalWords ?? 0} 词，将分 {(VocabManager.Instance.ActiveBank is { } b && cfg.GroupSize > 0 ? (int)Math.Ceiling((double)b.TotalWords / cfg.GroupSize) : 0)} 组）", 12, DimGrey));
+
+        // 达标阈值
+        var thresholdRow = new HBoxContainer();
+        thresholdRow.AddThemeConstantOverride("separation", 10);
+        vbox.AddChild(thresholdRow);
+        thresholdRow.AddChild(GameTheme.MakeLabel("达标阈值（%）：", 13, White));
+
+        var thresholdInput = new SpinBox
+        {
+            MinValue = 50, MaxValue = 100, Step = 5,
+            Value = cfg.GroupMasteryThreshold,
+            CustomMinimumSize = new Vector2(70, 0)
+        };
+        thresholdInput.ValueChanged += val =>
+        {
+            VocabConfig.Instance.GroupMasteryThreshold = (int)val;
+            VocabConfig.Instance.Save();
+        };
+        thresholdRow.AddChild(thresholdInput);
+
+        // 选择词包按钮
+        var selectGroupBtn = GameTheme.MakeButton("  选择词包  ", 14);
+        selectGroupBtn.Pressed += () =>
+        {
+            VocabManager.Instance.RefreshGroupStats();
+            WordGroupPanel.Instance?.Refresh();
+        };
+        vbox.AddChild(selectGroupBtn);
 
         var hint = GameTheme.MakeLabel(
             "规则说明：\n" +

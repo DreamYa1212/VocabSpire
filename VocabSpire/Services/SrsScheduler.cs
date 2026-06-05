@@ -112,16 +112,12 @@ public static class SrsScheduler
         word.EaseFactor = Math.Max(MinEaseFactor, word.EaseFactor + 0.1f);
     }
 
-    /// <summary>Review 状态下答对：更新 EF 并按公式计算新间隔。</summary>
+    /// <summary>Review 状态下答对：更新 EF 并按公式计算新间隔。达到退休阈值则标记为 Mastered。</summary>
     private static void HandleReviewPass(WordEntry word, SrsGrade grade, DateTime now)
     {
         word.Repetitions++;
 
         // SM-2 EF 更新公式
-        var gradeDelta = 3 - (int)grade; // Good=1, Hard=2, Easy=0（注意：公式用反向距离）
-        // 实际上 SM-2 公式：EF' = EF + (0.1 - (3-q)*(0.08 + (3-q)*0.02))
-        // 其中 q = grade (1=Hard, 2=Good 修正: SM-2 原始用 0-5，这里映射为 1-3)
-        // 使用 q = grade 数值（Hard=1, Good=2, Easy=3）
         var q = (int)grade;
         word.EaseFactor = Math.Max(MinEaseFactor,
             word.EaseFactor + (0.1f - (3 - q) * (0.08f + (3 - q) * 0.02f)));
@@ -134,7 +130,17 @@ public static class SrsScheduler
         else
             word.IntervalDays = (int)Math.Round(word.IntervalDays * word.EaseFactor);
 
-        word.DueDateTicks = now.AddDays(word.IntervalDays).Ticks;
+        // 退休检查：间隔超过阈值 → 标记为已掌握
+        var maxInterval = VocabConfig.Instance.SrsMaxIntervalDays;
+        if (maxInterval > 0 && word.IntervalDays >= maxInterval)
+        {
+            word.SrsState = SrsState.Mastered;
+            word.DueDateTicks = 0; // 不再到期
+        }
+        else
+        {
+            word.DueDateTicks = now.AddDays(word.IntervalDays).Ticks;
+        }
     }
 
     /// <summary>

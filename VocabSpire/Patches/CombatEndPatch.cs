@@ -23,8 +23,24 @@ public static class CombatEndHandler
     {
         WrongAnswerTracker.Instance.ClearCombatAnswers();
 
-        // 初始化本场战斗的固定词池（如果配置了 CombatFixedWordCount > 0）
         VocabManager.Instance.InitCombatFixedWordPool();
+
+        // 战斗池预览
+        if (VocabConfig.Instance.ShowPoolPreview)
+        {
+            var combatPool = VocabManager.Instance.GetCombatFixedWordPool();
+            if (combatPool is { Count: > 0 })
+            {
+                var panel = QuizPanel.Instance;
+                if (panel is not null)
+                {
+                    panel.PendingPoolPreviewTitle = $"本场战斗词池 ({combatPool.Count} 词)";
+                    panel.PendingPoolPreviewWords = combatPool;
+                    panel.CallDeferred(nameof(QuizPanel.ShowPendingPoolPreview));
+                }
+            }
+        }
+
         Log.Info("[VocabSpire] Combat word pool initialized (if enabled).");
     }
 

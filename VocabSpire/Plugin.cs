@@ -68,6 +68,7 @@ public partial class InputListener : Node
         RunSummaryPanel.Create();
         FreePassButton.Create();
         FreePassPopup.Create();
+        WordGroupPanel.Create();
         // VocabCollectionPanel 由 CompendiumPatch 按需创建（原生注入）
         Log.Info("[VocabSpire] UI panels created.");
     }

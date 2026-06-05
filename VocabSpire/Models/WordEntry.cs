@@ -6,7 +6,8 @@ public enum SrsState
     New,
     Learning,
     Review,
-    Relearning
+    Relearning,
+    Mastered  // 已掌握：间隔超过退休阈值，不再日常出题
 }
 
 /// <summary>SM-2 评分等级。</summary>

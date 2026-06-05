@@ -143,6 +143,10 @@ public partial class ChoiceAnswerWidget : VBoxContainer
             _selected.Clear();
             _selected.Add(index);
             HighlightBtn(index, SelectedBlue);
+
+            // 单选模式下选中选项 → 自动提交（不给反复试的机会）
+            if (VocabConfig.Instance.AutoSubmitCorrect)
+                OnSubmit();
         }
     }
 

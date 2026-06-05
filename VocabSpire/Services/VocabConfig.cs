@@ -110,6 +110,37 @@ public sealed class VocabConfig
     /// <summary>SRS 模式下每日新词上限（0=不限制）。</summary>
     public int MaxNewWordsPerDay { get; set; } = 20;
 
+    /// <summary>SRS 退休阈值：间隔天数达到此值自动标记为"已掌握"，不再出题。0=禁用退休（永久循环）。默认 180 天。</summary>
+    public int SrsMaxIntervalDays { get; set; } = 180;
+
+    /// <summary>SRS 评分后自动继续：点击 Again/Hard/Good/Easy 后自动关闭面板，无需再点继续按钮。</summary>
+    public bool SrsAutoContinue { get; set; }
+
+    /// <summary>SRS 仅答对时自动继续：Good/Easy 直接关闭，Again/Hard 仍需手动确认。</summary>
+    public bool SrsAutoContinueCorrectOnly { get; set; }
+
+    /// <summary>选择题选对后自动提交：单选模式下点击正确选项即提交，无需再点"提交答案"。</summary>
+    public bool AutoSubmitCorrect { get; set; }
+
+    /// <summary>本局词池耗尽提示：固定词池中所有词都学过且正确率达到阈值时弹窗问是否重置词池。</summary>
+    public bool EnablePoolExhaustedPrompt { get; set; } = true;
+
+    /// <summary>词池耗尽提示的正确率阈值（0-100）。默认 80%。</summary>
+    public int PoolExhaustedAccuracyThreshold { get; set; } = 80;
+
+    /// <summary>新局/本场开始或重置词池后显示词池预览。</summary>
+    public bool ShowPoolPreview { get; set; } = true;
+
+    // ── 分组记忆 ──
+    /// <summary>每组单词数量（0=不启用分组）。</summary>
+    public int GroupSize { get; set; }
+
+    /// <summary>当前激活的分组索引（-1=未激活）。持久化用。</summary>
+    public int ActiveGroupIndex { get; set; } = -1;
+
+    /// <summary>分组达标正确率阈值（0-100）。默认 80%。</summary>
+    public int GroupMasteryThreshold { get; set; } = 80;
+
     /// <summary>本局游戏固定单词数量（0=不启用）。开启后整局从随机选出的这批词中出题。</summary>
     public int RunFixedWordCount { get; set; }
 
@@ -302,6 +333,20 @@ public sealed class VocabConfig
             FreePassEnabled = data.FreePassEnabled;
             if (data.FreePassStreakCost > 0) FreePassStreakCost = data.FreePassStreakCost;
             if (data.FreePassMaxStock > 0) FreePassMaxStock = data.FreePassMaxStock;
+
+            // SRS / SM-2
+            EnableSrsMode = data.EnableSrsMode;
+            if (data.MaxNewWordsPerDay > 0) MaxNewWordsPerDay = data.MaxNewWordsPerDay;
+            if (data.SrsMaxIntervalDays > 0) SrsMaxIntervalDays = data.SrsMaxIntervalDays;
+            SrsAutoContinue = data.SrsAutoContinue;
+            SrsAutoContinueCorrectOnly = data.SrsAutoContinueCorrectOnly;
+            AutoSubmitCorrect = data.AutoSubmitCorrect;
+            EnablePoolExhaustedPrompt = data.EnablePoolExhaustedPrompt;
+            if (data.PoolExhaustedAccuracyThreshold > 0) PoolExhaustedAccuracyThreshold = data.PoolExhaustedAccuracyThreshold;
+            ShowPoolPreview = data.ShowPoolPreview;
+            if (data.GroupSize > 0) GroupSize = data.GroupSize;
+            ActiveGroupIndex = data.ActiveGroupIndex;
+            if (data.GroupMasteryThreshold > 0) GroupMasteryThreshold = data.GroupMasteryThreshold;
             // FreePassStock 不在 config 中持久化——由 RunBattleState 按 Run 管理
 
             // 迁移旧配置：quiz_mode (单选) → quiz_mode_flags (多选)
@@ -361,7 +406,6 @@ public sealed class VocabConfig
                 SpellingPlayAudio = SpellingPlayAudio,
                 EnToCnPlayAudio = EnToCnPlayAudio,
                 SpellingEasyMode = SpellingEasyMode,
-                RunFixedWordCount = RunFixedWordCount,
                 CombatFixedWordCount = CombatFixedWordCount,
                 ReviewQuizMode = (int)ReviewQuizMode,
                 ReviewMaxCount = ReviewMaxCount,
@@ -379,7 +423,20 @@ public sealed class VocabConfig
                 FreePassStreakCost = FreePassStreakCost,
                 FreePassMaxStock = FreePassMaxStock,
                 TotalAnswered = TotalAnswered,
-                TotalCorrect = TotalCorrect
+                TotalCorrect = TotalCorrect,
+                // SRS / SM-2
+                EnableSrsMode = EnableSrsMode,
+                MaxNewWordsPerDay = MaxNewWordsPerDay,
+                SrsMaxIntervalDays = SrsMaxIntervalDays,
+                SrsAutoContinue = SrsAutoContinue,
+                SrsAutoContinueCorrectOnly = SrsAutoContinueCorrectOnly,
+                AutoSubmitCorrect = AutoSubmitCorrect,
+                EnablePoolExhaustedPrompt = EnablePoolExhaustedPrompt,
+                PoolExhaustedAccuracyThreshold = PoolExhaustedAccuracyThreshold,
+                ShowPoolPreview = ShowPoolPreview,
+                GroupSize = GroupSize,
+                ActiveGroupIndex = ActiveGroupIndex,
+                GroupMasteryThreshold = GroupMasteryThreshold
             };
 
             var options = new JsonSerializerOptions { WriteIndented = true };
@@ -543,5 +600,42 @@ public sealed class VocabConfig
 
         [JsonPropertyName("total_correct")]
         public int TotalCorrect { get; set; }
+
+        // ── SRS / SM-2 ──
+        [JsonPropertyName("enable_srs_mode")]
+        public bool EnableSrsMode { get; set; }
+
+        [JsonPropertyName("max_new_words_per_day")]
+        public int MaxNewWordsPerDay { get; set; } = 20;
+
+        [JsonPropertyName("srs_max_interval_days")]
+        public int SrsMaxIntervalDays { get; set; } = 180;
+
+        [JsonPropertyName("srs_auto_continue")]
+        public bool SrsAutoContinue { get; set; }
+
+        [JsonPropertyName("srs_auto_continue_correct_only")]
+        public bool SrsAutoContinueCorrectOnly { get; set; }
+
+        [JsonPropertyName("auto_submit_correct")]
+        public bool AutoSubmitCorrect { get; set; }
+
+        [JsonPropertyName("enable_pool_exhausted_prompt")]
+        public bool EnablePoolExhaustedPrompt { get; set; } = true;
+
+        [JsonPropertyName("pool_exhausted_accuracy_threshold")]
+        public int PoolExhaustedAccuracyThreshold { get; set; } = 80;
+
+        [JsonPropertyName("show_pool_preview")]
+        public bool ShowPoolPreview { get; set; } = true;
+
+        [JsonPropertyName("group_size")]
+        public int GroupSize { get; set; }
+
+        [JsonPropertyName("active_group_index")]
+        public int ActiveGroupIndex { get; set; } = -1;
+
+        [JsonPropertyName("group_mastery_threshold")]
+        public int GroupMasteryThreshold { get; set; } = 80;
     }
 }

@@ -17,12 +17,14 @@ public sealed class VocabManager
     private readonly HashSet<string> _testedWordsThisRun = new();
     private bool _wasInRun;
 
-    // ── 本局固定词池（RunFixedWordCount > 0）──
-    private List<WordEntry>? _runFixedWordPool;
-    private bool _runFixedPoolInitialized;
-
     // ── 本场战斗固定词池（CombatFixedWordCount > 0）──
     private List<WordEntry>? _combatFixedWordPool;
+
+    // ── 分组记忆（GroupSize > 0）──
+    private List<WordGroup> _wordGroups = new();
+    private int _activeGroupIndex = -1;
+    private List<WordEntry>? _activeGroupWordPool;
+    private int[] _shuffledIndices = Array.Empty<int>();
 
     public IReadOnlyList<WordBank> Banks => _banks.AsReadOnly();
     public WordBank? ActiveBank => _activeBank;
@@ -86,6 +88,15 @@ public sealed class VocabManager
 
         // 加载持久化的单词进度
         LoadProgress();
+
+        // 初始化分组
+        RegenerateGroups();
+        LoadGroupProgress();
+
+        // 恢复上次选中的分组
+        var savedGroupIndex = VocabConfig.Instance.ActiveGroupIndex;
+        if (savedGroupIndex >= 0 && savedGroupIndex < _wordGroups.Count)
+            SelectGroup(savedGroupIndex);
     }
 
     public void SetActiveBank(string bankId)
@@ -227,7 +238,10 @@ public sealed class VocabManager
         var cfg = VocabConfig.Instance;
         var modes = cfg.GetModesForAct(tier);
 
-        // ── 词池优先级：本场战斗固定池 > 本局固定池 > 完整词库 ──
+        // ── 词池优先级：分组池 > 本场战斗固定池 > 本局固定池 > 完整词库 ──
+        if (_activeGroupWordPool is { Count: >= 2 })
+            return _quizGenerator.Generate(_activeBank, _activeGroupWordPool, modes, cfg.OptionCount, tier);
+
         var combatPool = GetCombatFixedWordPool();
         if (combatPool is { Count: >= 2 })
         {
@@ -242,21 +256,6 @@ public sealed class VocabManager
                     return _quizGenerator.Generate(_activeBank, reviewPool, modes, cfg.OptionCount, tier);
             }
             return _quizGenerator.Generate(_activeBank, combatPool, modes, cfg.OptionCount, tier);
-        }
-
-        var runPool = GetRunFixedWordPool();
-        if (runPool is { Count: >= 2 })
-        {
-            // 拼写复习模式：在本局固定池内过滤
-            if (cfg.SpellingReviewOnly && tier >= 2 && modes.HasFlag(QuizModeFlags.SpellEnglish))
-            {
-                var reviewPool = runPool
-                    .Where(w => _testedWordsThisRun.Contains(w.English.ToLowerInvariant()))
-                    .ToList();
-                if (reviewPool.Count >= 4)
-                    return _quizGenerator.Generate(_activeBank, reviewPool, modes, cfg.OptionCount, tier);
-            }
-            return _quizGenerator.Generate(_activeBank, runPool, modes, cfg.OptionCount, tier);
         }
 
         // 拼写复习模式：Act2+ 且开启了"仅复习已测词"
@@ -277,7 +276,7 @@ public sealed class VocabManager
 
     /// <summary>
     /// SRS 模式出题：按 SM-2 优先级（Relearning > Due Review > New）选词。
-    /// 同时处理断签堆积，每日新词限流。
+    /// 尊重固定词池约束（战斗池 > 本局池 > 全词库），仅在有效词池内做 SRS 调度。
     /// </summary>
     public QuizQuestion? GenerateQuizSrs()
     {
@@ -290,68 +289,113 @@ public sealed class VocabManager
             ? Math.Clamp(GameBridge.GetCurrentAct(), 1, 3)
             : 1;
         var modes = cfg.GetModesForAct(tier);
-
         var now = DateTime.UtcNow;
-        var words = _activeBank.Words;
 
-        // ── 优先级队列 ──
+        // ── 确定有效词池：分组池 > 战斗池 > 全词库 ──
+        List<WordEntry>? effectivePool = null;
+
+        if (_activeGroupWordPool is { Count: >= 2 })
+            effectivePool = _activeGroupWordPool;
+        else
+        {
+            var combatPool = GetCombatFixedWordPool();
+            if (combatPool is { Count: >= 2 })
+                effectivePool = combatPool;
+        }
+
+        // 拼写复习模式的过滤在 SRS 调度之后处理（优先级更高）
+        var words = effectivePool ?? _activeBank.Words;
+
+        // 排除已掌握的词（Mastered 状态不参与日常出题）
+        var activeWords = words.Where(w => w.SrsState != SrsState.Mastered).ToList();
+        if (activeWords.Count < 2)
+            activeWords = words.ToList(); // 全是 Mastered 时回退
+
+        // ── 优先级队列（仅在有效词池内）──
         // 1. Relearning / Learning Due（最紧急：Again 词、学习中到期词）
-        var relearningPool = words
+        var relearningPool = activeWords
             .Where(w => w.SrsState is SrsState.Relearning or SrsState.Learning && w.IsDue)
             .OrderBy(w => w.DueDateTicks)
             .ToList();
 
         if (relearningPool.Count >= 2)
-            return _quizGenerator.Generate(_activeBank, relearningPool, modes, cfg.OptionCount, tier);
+            return GenerateFromPool(relearningPool, modes, cfg.OptionCount, tier, modes);
 
         // 2. Review Due（今天到期的复习词）
-        var reviewDuePool = words
+        var reviewDuePool = activeWords
             .Where(w => w.SrsState == SrsState.Review && SrsScheduler.IsDueToday(w, now))
             .OrderBy(w => w.DueDateTicks)
             .ToList();
 
         if (reviewDuePool.Count >= 2)
-            return _quizGenerator.Generate(_activeBank, reviewDuePool, modes, cfg.OptionCount, tier);
+            return GenerateFromPool(reviewDuePool, modes, cfg.OptionCount, tier, modes);
 
-        // 3. New words（新词，每日限流）
-        var newWords = words
+        // 3. New words（新词，每日限流；固定词池模式下不限制新词上限）
+        var newWords = activeWords
             .Where(w => w.SrsState == SrsState.New)
             .ToList();
 
         if (newWords.Count > 0)
         {
-            // 每日新词上限（默认 20）
-            var maxNewPerDay = cfg.MaxNewWordsPerDay > 0 ? cfg.MaxNewWordsPerDay : 20;
-            var todayNewCount = words.Count(w =>
-                w.SrsState != SrsState.New && new DateTime(w.LastReviewTicks, DateTimeKind.Utc).Date == now.Date
-                && w.Repetitions == 0); // Repetitions=0 表示首次学习
+            if (effectivePool is not null)
+            {
+                // 固定词池模式：新词照出，不受每日上限约束（池子本身就够小）
+                if (newWords.Count >= 2)
+                    return GenerateFromPool(newWords, modes, cfg.OptionCount, tier, modes);
+            }
+            else
+            {
+                var maxNewPerDay = cfg.MaxNewWordsPerDay > 0 ? cfg.MaxNewWordsPerDay : 20;
+                var todayNewCount = activeWords.Count(w =>
+                    w.SrsState != SrsState.New && new DateTime(w.LastReviewTicks, DateTimeKind.Utc).Date == now.Date
+                    && w.Repetitions == 0);
 
-            if (todayNewCount < maxNewPerDay && newWords.Count >= 2)
-                return _quizGenerator.Generate(_activeBank, newWords, modes, cfg.OptionCount, tier);
+                if (todayNewCount < maxNewPerDay && newWords.Count >= 2)
+                    return GenerateFromPool(newWords, modes, cfg.OptionCount, tier, modes);
+            }
 
-            // 今日新词已达上限，降级到 Review Due
             if (reviewDuePool.Count >= 2)
-                return _quizGenerator.Generate(_activeBank, reviewDuePool, modes, cfg.OptionCount, tier);
+                return GenerateFromPool(reviewDuePool, modes, cfg.OptionCount, tier, modes);
         }
 
         // 4. 实在没有：任意未到期 Review 词（摊还）
-        var anyReview = words
+        var anyReview = activeWords
             .Where(w => w.SrsState == SrsState.Review)
             .OrderBy(w => w.DueDateTicks)
             .ToList();
         if (anyReview.Count >= 2)
-            return _quizGenerator.Generate(_activeBank, anyReview, modes, cfg.OptionCount, tier);
+            return GenerateFromPool(anyReview, modes, cfg.OptionCount, tier, modes);
 
-        // 5. 回退：任意已有进度的词
-        var anyProgress = words
+        // 5. 回退：任意已有进度的词（非 New 非 Mastered）
+        var anyProgress = activeWords
             .Where(w => w.SrsState != SrsState.New)
             .OrderBy(w => w.DueDateTicks)
             .ToList();
         if (anyProgress.Count >= 2)
-            return _quizGenerator.Generate(_activeBank, anyProgress, modes, cfg.OptionCount, tier);
+            return GenerateFromPool(anyProgress, modes, cfg.OptionCount, tier, modes);
 
-        // 6. 最终回退：正常出题
-        return _quizGenerator.Generate(_activeBank, modes, cfg.OptionCount, tier);
+        // 6. 最终回退：正常出题（使用有效词池或完整词库）
+        return GenerateFromPool(activeWords, modes, cfg.OptionCount, tier, modes);
+    }
+
+    /// <summary>
+    /// 从指定词池生成题目。如果开启拼写复习模式且符合条件，在池内过滤已测词。
+    /// </summary>
+    private QuizQuestion? GenerateFromPool(List<WordEntry> pool, QuizModeFlags modes, int optionCount, int tier, QuizModeFlags globalModes)
+    {
+        var cfg = VocabConfig.Instance;
+        if (_activeBank is null) return null;
+
+        if (cfg.SpellingReviewOnly && tier >= 2 && globalModes.HasFlag(QuizModeFlags.SpellEnglish))
+        {
+            var reviewPool = pool
+                .Where(w => _testedWordsThisRun.Contains(w.English.ToLowerInvariant()))
+                .ToList();
+            if (reviewPool.Count >= 4)
+                return _quizGenerator.Generate(_activeBank, reviewPool, modes, optionCount, tier);
+        }
+
+        return _quizGenerator.Generate(_activeBank, pool, modes, optionCount, tier);
     }
 
     public void RecordAnswer(WordEntry word, bool correct)
@@ -375,7 +419,59 @@ public sealed class VocabManager
 
         // 持久化单词进度
         SaveProgress();
+
+        // 分组达标检测
+        CheckGroupMastered();
+
+        // SRS 固定词池耗尽检测
+        CheckPoolExhausted();
     }
+
+    /// <summary>
+    /// 检测固定词池是否耗尽。
+    /// 战斗池耗尽 → 弹窗问从本局池还是全词库补；本局池耗尽 → 弹窗问是否重掷。
+    /// </summary>
+    private void CheckPoolExhausted()
+    {
+        if (!VocabConfig.Instance.EnableSrsMode) return;
+        if (!VocabConfig.Instance.EnablePoolExhaustedPrompt) return;
+
+        var now = DateTime.UtcNow;
+
+        // 先检查战斗池（优先级高）
+        var combatPool = GetCombatFixedWordPool();
+        if (combatPool is { Count: >= 4 } && IsPoolExhausted(combatPool, now))
+        {
+            if (_poolExhaustedPromptShown) return;
+            _poolExhaustedPromptShown = true;
+
+            var correct = combatPool.Sum(w => w.CorrectCount);
+            var total = combatPool.Sum(w => w.CorrectCount + w.WrongCount);
+            var accuracy = total > 0 ? (float)correct / total * 100f : 0f;
+
+            var hasRunPool = false;
+            var panel = UI.QuizPanel.Instance;
+            panel?.CallDeferred(nameof(UI.QuizPanel.ShowCombatPoolExhaustedPrompt),
+                accuracy, combatPool.Count, hasRunPool);
+            return;
+        }
+    }
+
+    private static bool IsPoolExhausted(List<WordEntry> pool, DateTime now)
+    {
+        if (pool.Count < 2) return false;
+        if (pool.Any(w => w.SrsState == SrsState.New)) return false;
+        if (pool.Any(w => w.SrsState == SrsState.Relearning)) return false;
+        if (pool.Any(w => w.SrsState == SrsState.Review && SrsScheduler.IsDueToday(w, now))) return false;
+
+        var total = pool.Sum(w => w.CorrectCount + w.WrongCount);
+        if (total == 0) return false;
+        var correct = pool.Sum(w => w.CorrectCount);
+        var accuracy = (float)correct / total * 100f;
+        return accuracy >= VocabConfig.Instance.PoolExhaustedAccuracyThreshold;
+    }
+
+    private bool _poolExhaustedPromptShown;
 
     // ── 单词进度持久化 ──
 
@@ -513,10 +609,22 @@ public sealed class VocabManager
             if (inRun && !_wasInRun)
             {
                 _testedWordsThisRun.Clear();
-                RunQuizTracker.Instance.Reset(); // 新局开始，重置追踪
-                _runFixedPoolInitialized = false;
-                _runFixedWordPool = null;
+                RunQuizTracker.Instance.Reset();
                 _combatFixedWordPool = null;
+                _poolExhaustedPromptShown = false;
+                _groupMasteredPromptShown = false;
+
+                // 分组预览（分组激活时显示当前分组信息）
+                if (VocabConfig.Instance.ShowPoolPreview && _activeGroupWordPool is { Count: > 0 })
+                {
+                    var panel = UI.QuizPanel.Instance;
+                    if (panel is not null)
+                    {
+                        panel.PendingPoolPreviewTitle = $"当前词包 {ActiveGroup?.Label} ({_activeGroupWordPool.Count} 词)";
+                        panel.PendingPoolPreviewWords = _activeGroupWordPool;
+                        panel.CallDeferred(nameof(UI.QuizPanel.ShowPendingPoolPreview));
+                    }
+                }
             }
             _wasInRun = inRun;
         }
@@ -527,35 +635,7 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 获取（或初始化）本局固定词池。仅在 RunFixedWordCount > 0 时有效。
-    /// </summary>
-    public List<WordEntry>? GetRunFixedWordPool()
-    {
-        if (_activeBank is null) return null;
-        var cfg = VocabConfig.Instance;
-        if (cfg.RunFixedWordCount <= 0) return null;
-        if (_activeBank.Words.Count <= cfg.RunFixedWordCount) return null;
-
-        if (!_runFixedPoolInitialized)
-        {
-            var rng = new Random(
-                (RunManager.Instance.DebugOnlyGetState()?.Rng?.StringSeed ?? Guid.NewGuid().ToString()).GetHashCode());
-            _runFixedWordPool = _activeBank.Words
-                .OrderBy(_ => rng.Next())
-                .Take(cfg.RunFixedWordCount)
-                .ToList();
-            _runFixedPoolInitialized = true;
-            Log.Info($"[VocabSpire] RunFixedWordPool initialized: {_runFixedWordPool.Count} words (from seed).");
-        }
-
-        return _runFixedWordPool;
-    }
-
-    /// <summary>
-    /// 初始化本场战斗固定词池。
-    /// 如果 RunFixedWordCount > 0：从本局固定池子集选取，CombatFixedWordCount 会被 clamp 到不超过本局池大小。
-    /// 否则：直接从完整词库选取。
-    /// 在战斗开始时调用。
+    /// 初始化本场战斗固定词池。从当前有效词池（分组池或全词库）中随机选取。
     /// </summary>
     public void InitCombatFixedWordPool()
     {
@@ -564,46 +644,19 @@ public sealed class VocabManager
         var cfg = VocabConfig.Instance;
         if (cfg.CombatFixedWordCount <= 0) return;
 
-        var runPool = GetRunFixedWordPool();
-        if (runPool is not null)
-        {
-            // 两者都设置了：本场战斗数量不能超过本局固定词池大小
-            var effectiveCount = Math.Min(cfg.CombatFixedWordCount, runPool.Count);
-            if (effectiveCount < 2) return;
+        var sourcePool = _activeGroupWordPool ?? _activeBank.Words;
+        if (sourcePool.Count <= cfg.CombatFixedWordCount) return;
 
-            var rng = new Random(Guid.NewGuid().GetHashCode());
-            _combatFixedWordPool = runPool
-                .OrderBy(_ => rng.Next())
-                .Take(effectiveCount)
-                .ToList();
-            Log.Info($"[VocabSpire] CombatFixedWordPool initialized: {_combatFixedWordPool.Count} words (from run pool of {runPool.Count}).");
-        }
-        else
-        {
-            // 仅设置了本场战斗：从完整词库选取，不受限制
-            if (_activeBank.Words.Count <= cfg.CombatFixedWordCount) return;
-
-            var rng = new Random(Guid.NewGuid().GetHashCode());
-            _combatFixedWordPool = _activeBank.Words
-                .OrderBy(_ => rng.Next())
-                .Take(cfg.CombatFixedWordCount)
-                .ToList();
-            Log.Info($"[VocabSpire] CombatFixedWordPool initialized: {_combatFixedWordPool.Count} words (from full bank).");
-        }
+        var rng = new Random(Guid.NewGuid().GetHashCode());
+        _combatFixedWordPool = sourcePool
+            .OrderBy(_ => rng.Next())
+            .Take(cfg.CombatFixedWordCount)
+            .ToList();
+        Log.Info($"[VocabSpire] CombatFixedWordPool initialized: {_combatFixedWordPool.Count} words.");
     }
 
     /// <summary>
-    /// 强制重新初始化本局固定词池（玩家手动重掷）。
-    /// </summary>
-    public void RerollRunFixedWordPool()
-    {
-        _runFixedPoolInitialized = false;
-        _runFixedWordPool = null;
-        GetRunFixedWordPool();
-    }
-
-    /// <summary>
-    /// 强制重新初始化本场战斗固定词池（玩家手动重掷），沿用上一次 InitCombatFixedWordPool 的逻辑。
+    /// 强制重新初始化本场战斗固定词池（玩家手动重掷）。
     /// </summary>
     public void RerollCombatFixedWordPool()
     {
@@ -614,6 +667,9 @@ public sealed class VocabManager
     /// 获取本场战斗固定词池（如果有的话）。
     /// </summary>
     public List<WordEntry>? GetCombatFixedWordPool() => _combatFixedWordPool;
+
+    /// <summary>清空本场战斗固定词池，回退到本局池或全词库。</summary>
+    public void ClearCombatFixedWordPool() => _combatFixedWordPool = null;
 
     /// <summary>
     /// 获取本局已测试过的词（用于拼写复习）。
@@ -630,4 +686,217 @@ public sealed class VocabManager
 
         return filtered.Count >= 4 ? filtered : _activeBank.Words;
     }
+
+    // ── 分组记忆 ──
+
+    /// <summary>获取分组列表（只读）。</summary>
+    public IReadOnlyList<WordGroup> WordGroups => _wordGroups.AsReadOnly();
+
+    /// <summary>当前激活的分组索引（-1 = 未激活/全部）。</summary>
+    public int ActiveGroupIndex => _activeGroupIndex;
+
+    /// <summary>当前激活的分组。</summary>
+    public WordGroup? ActiveGroup => _activeGroupIndex >= 0 && _activeGroupIndex < _wordGroups.Count
+        ? _wordGroups[_activeGroupIndex] : null;
+
+    /// <summary>分组模式下当前有效的词池（即当前分组的词列表）。</summary>
+    public List<WordEntry>? ActiveGroupWordPool => _activeGroupWordPool;
+
+    /// <summary>
+    /// 根据 GroupSize 重新切分词库，并同步各组的进度统计。
+    /// </summary>
+    public void RegenerateGroups()
+    {
+        _wordGroups.Clear();
+        _activeGroupIndex = -1;
+        _activeGroupWordPool = null;
+        if (_activeBank is null) return;
+
+        var groupSize = VocabConfig.Instance.GroupSize;
+        if (groupSize <= 0) return;
+
+        var words = _activeBank.Words;
+
+        // 打乱索引（固定种子保证重启后相同）
+        var shuffleRng = new Random(_activeBank.Id.GetHashCode());
+        _shuffledIndices = Enumerable.Range(0, words.Count).OrderBy(_ => shuffleRng.Next()).ToArray();
+
+        var totalGroups = (int)Math.Ceiling((double)words.Count / groupSize);
+
+        for (var g = 0; g < totalGroups; g++)
+        {
+            var start = g * groupSize;
+            var end = Math.Min(start + groupSize, words.Count);
+            var group = new WordGroup
+            {
+                Index = g,
+                StartIndex = start,
+                EndIndex = end
+            };
+
+            // 同步进度（使用图鉴标准 + 打乱索引）
+            var masteryThreshold = VocabConfig.Instance.MasteryStreak;
+            for (var i = start; i < end; i++)
+            {
+                var w = words[_shuffledIndices.Length > i ? _shuffledIndices[i] : i];
+                group.CorrectCount += w.CorrectCount;
+                group.WrongCount += w.WrongCount;
+                if (w.Streak >= masteryThreshold)
+                    group.MasteredCount++;
+                else if (w.CorrectCount + w.WrongCount > 0)
+                    group.LearningCount++;
+                else
+                    group.LockedCount++;
+            }
+
+            _wordGroups.Add(group);
+        }
+
+        Log.Info($"[VocabSpire] Regenerated {totalGroups} word groups (size={groupSize}, total={words.Count}).");
+    }
+
+    /// <summary>选择激活分组（-1 = 取消分组，恢复全词库）。</summary>
+    public void SelectGroup(int groupIndex)
+    {
+        if (groupIndex < 0 || groupIndex >= _wordGroups.Count)
+        {
+            _activeGroupIndex = -1;
+            _activeGroupWordPool = null;
+            VocabConfig.Instance.ActiveGroupIndex = -1;
+            VocabConfig.Instance.Save();
+            Log.Info("[VocabSpire] Group mode disabled (full bank).");
+            return;
+        }
+
+        _activeGroupIndex = groupIndex;
+        var group = _wordGroups[groupIndex];
+        _activeGroupWordPool = _shuffledIndices
+            .Skip(group.StartIndex)
+            .Take(group.Count)
+            .Select(i => _activeBank!.Words[i])
+            .ToList();
+
+        VocabConfig.Instance.ActiveGroupIndex = groupIndex;
+        VocabConfig.Instance.Save();
+        Log.Info($"[VocabSpire] Active group: {group.Label} ({group.RangeText}, {group.Count} words).");
+    }
+
+    /// <summary>刷新所有分组的进度统计，使用图鉴标准（Streak >= MasteryStreak）。</summary>
+    public void RefreshGroupStats()
+    {
+        if (_activeBank is null) return;
+        var masteryThreshold = VocabConfig.Instance.MasteryStreak;
+        foreach (var group in _wordGroups)
+        {
+            group.CorrectCount = 0;
+            group.WrongCount = 0;
+            group.MasteredCount = 0;
+            group.LearningCount = 0;
+            group.LockedCount = 0;
+            for (var i = group.StartIndex; i < group.EndIndex; i++)
+            {
+                var w = _activeBank.Words[_shuffledIndices.Length > i ? _shuffledIndices[i] : i];
+                group.CorrectCount += w.CorrectCount;
+                group.WrongCount += w.WrongCount;
+                if (w.Streak >= masteryThreshold)
+                    group.MasteredCount++;
+                else if (w.CorrectCount + w.WrongCount > 0)
+                    group.LearningCount++;
+                else
+                    group.LockedCount++;
+            }
+        }
+    }
+
+    /// <summary>标记分组为已完成。</summary>
+    public void MarkGroupCompleted(int groupIndex)
+    {
+        if (groupIndex >= 0 && groupIndex < _wordGroups.Count)
+        {
+            _wordGroups[groupIndex].Completed = true;
+            SaveGroupProgress();
+        }
+    }
+
+    /// <summary>分组进度持久化。</summary>
+    public void SaveGroupProgress()
+    {
+        try
+        {
+            var modDir = Path.GetDirectoryName(typeof(VocabManager).Assembly.Location) ?? ".";
+            var path = Path.Combine(modDir, "_group_progress.json");
+            var data = _wordGroups.Select(g => new
+            {
+                index = g.Index,
+                completed = g.Completed
+            });
+            var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[VocabSpire] Failed to save group progress: {ex.Message}");
+        }
+    }
+
+    public void LoadGroupProgress()
+    {
+        try
+        {
+            var modDir = Path.GetDirectoryName(typeof(VocabManager).Assembly.Location) ?? ".";
+            var path = Path.Combine(modDir, "_group_progress.json");
+            if (!File.Exists(path)) return;
+
+            var json = File.ReadAllText(path);
+            var data = JsonSerializer.Deserialize<List<GroupProgressEntry>>(json);
+            if (data is null) return;
+
+            foreach (var entry in data)
+            {
+                var group = _wordGroups.FirstOrDefault(g => g.Index == entry.Index);
+                if (group is not null)
+                    group.Completed = entry.Completed;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[VocabSpire] Failed to load group progress: {ex.Message}");
+        }
+    }
+
+    private sealed class GroupProgressEntry
+    {
+        public int Index { get; set; }
+        public bool Completed { get; set; }
+    }
+
+    /// <summary>检查当前分组是否达标（与词汇图鉴标准统一：Streak >= MasteryStreak），达标时弹窗。</summary>
+    private void CheckGroupMastered()
+    {
+        var group = ActiveGroup;
+        if (group is null || group.Completed) return;
+        if (_groupMasteredPromptShown) return;
+        if (_activeGroupWordPool is null) return;
+
+        var masteryThreshold = VocabConfig.Instance.MasteryStreak;
+
+        // 条件 1：组内所有词都有学习记录（至少答过一次）
+        var hasUntouched = _activeGroupWordPool.Any(w => w.CorrectCount + w.WrongCount == 0);
+        if (hasUntouched) return;
+
+        // 条件 2：已掌握词数（Streak >= MasteryStreak）比例达标
+        var total = _activeGroupWordPool.Count;
+        var mastered = _activeGroupWordPool.Count(w => w.Streak >= masteryThreshold);
+        var masteredPct = (float)mastered / total * 100f;
+        var threshold = VocabConfig.Instance.GroupMasteryThreshold;
+        if (masteredPct < threshold) return;
+
+        _groupMasteredPromptShown = true;
+        UI.QuizPanel.Instance?.CallDeferred(
+            nameof(UI.QuizPanel.ShowGroupMasteredPrompt),
+            group.Label,
+            masteredPct,
+            threshold);
+    }
+    private bool _groupMasteredPromptShown;
 }

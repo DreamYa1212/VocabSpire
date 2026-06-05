@@ -378,8 +378,11 @@ public partial class QuizPanel : Control
 
         UpdateStats();
 
-        // 显示 4 级评分按钮（等用户评分后才执行 SM-2 调度和关闭）
-        ShowGradeButtons();
+        // SRS 开启时显示 4 级评分按钮；关闭时直接完成（恢复原行为）
+        if (VocabConfig.Instance.EnableSrsMode)
+            ShowGradeButtons();
+        else
+            FinishAnswer(correct);
     }
 
     // ── 拼写题作答 ──
@@ -414,25 +417,54 @@ public partial class QuizPanel : Control
 
         UpdateStats();
 
-        // 拼写题：正确默认 Good，用户仍可修改；错误默认 Again
-        ShowGradeButtons();
+        // SRS 开启时显示 4 级评分按钮；关闭时直接完成（恢复原行为）
+        if (VocabConfig.Instance.EnableSrsMode)
+            ShowGradeButtons();
+        else
+            FinishAnswer(_lastCorrect);
+    }
+
+    // ── 非 SRS 模式：直接完成答题 ──
+
+    /// <summary>非 SRS 模式下跳过评分，直接记录。答对时根据配置决定是否自动继续。</summary>
+    private void FinishAnswer(bool correct)
+    {
+        if (_currentQuestion is null) return;
+
+        VocabManager.Instance.RecordAnswer(_currentQuestion.TargetWord, correct);
+
+        var cfg = VocabConfig.Instance;
+        var autoClose = correct && (cfg.AutoSubmitCorrect || cfg.SrsAutoContinueCorrectOnly);
+
+        if (autoClose)
+        {
+            CloseQuiz(true);
+        }
+        else
+        {
+            _confirmButton.Visible = true;
+        }
     }
 
     // ── SM-2 评分 ──
 
-    /// <summary>答完题后显示 4 级评分按钮。</summary>
+    /// <summary>答完题后显示 4 级评分按钮（仅 SRS 模式）。
+    /// 答错时只允许 Again/Hard，不允许 Good/Easy（防止作弊）。</summary>
     private void ShowGradeButtons()
     {
         _gradeContainer.Visible = true;
         _againBtn.Disabled = false;
         _hardBtn.Disabled = false;
-        _goodBtn.Disabled = false;
-        _easyBtn.Disabled = false;
+
+        // 答错时 Good/Easy 不可用
+        _goodBtn.Disabled = !_lastCorrect;
+        _easyBtn.Disabled = !_lastCorrect;
+
         _confirmButton.Visible = false;
         _graded = false;
     }
 
-    /// <summary>用户点击评分按钮。</summary>
+    /// <summary>用户点击评分按钮（仅 SRS 模式）。</summary>
     private void OnGradeSelected(SrsGrade grade)
     {
         if (_graded || _currentQuestion is null) return;
@@ -443,14 +475,28 @@ public partial class QuizPanel : Control
         _goodBtn.Disabled = true;
         _easyBtn.Disabled = true;
 
-        // 执行 SM-2 调度
         var word = _currentQuestion.TargetWord;
-        var correct = grade != SrsGrade.Again;
-        VocabManager.Instance.RecordAnswer(word, correct);
-        SrsScheduler.Grade(word, grade);
 
-        // 显示确认按钮
-        _confirmButton.Visible = true;
+        // 客观答错 → SM-2 强制按 Again 处理（不管用户选 Hard 还是 Again）
+        var effectiveGrade = _lastCorrect ? grade : SrsGrade.Again;
+        var correct = _lastCorrect;
+        VocabManager.Instance.RecordAnswer(word, correct);
+
+        if (VocabConfig.Instance.EnableSrsMode)
+            SrsScheduler.Grade(word, effectiveGrade);
+
+        var cfg = VocabConfig.Instance;
+        var autoContinue = cfg.SrsAutoContinue
+            || (cfg.SrsAutoContinueCorrectOnly && grade is SrsGrade.Good or SrsGrade.Easy);
+
+        if (autoContinue)
+        {
+            CloseQuiz(_lastCorrect);
+        }
+        else
+        {
+            _confirmButton.Visible = true;
+        }
     }
 
     // ── 反馈和错题记录 ──
@@ -597,6 +643,314 @@ public partial class QuizPanel : Control
     {
         if (_currentQuestion is null) return;
         TtsService.Instance.Speak(_currentQuestion.TargetWord.English);
+    }
+
+    // ── 词池耗尽提示 ──
+
+    private bool _poolExhaustedPromptVisible;
+
+    /// <summary>待显示的词池预览标题（CallDeferred 桥接用）。</summary>
+    public string? PendingPoolPreviewTitle { get; set; }
+
+    /// <summary>待显示的词池预览列表（CallDeferred 桥接用）。</summary>
+    public List<WordEntry>? PendingPoolPreviewWords { get; set; }
+
+    /// <summary>CallDeferred 触发：显示待处理的词池预览（仅在不在答题时）。</summary>
+    public void ShowPendingPoolPreview()
+    {
+        if (Visible) return;
+        if (PendingPoolPreviewTitle is not null && PendingPoolPreviewWords is not null)
+        {
+            ShowPoolPreview(PendingPoolPreviewTitle, PendingPoolPreviewWords);
+            PendingPoolPreviewTitle = null;
+            PendingPoolPreviewWords = null;
+        }
+    }
+
+    /// <summary>分组达标弹窗：使用与项目一致的暗色面板风格。</summary>
+    public void ShowGroupMasteredPrompt(string groupLabel, float accuracy, int threshold)
+    {
+        var overlay = new ColorRect
+        {
+            Color = GameTheme.Backdrop,
+            LayoutMode = 1,
+            AnchorsPreset = (int)LayoutPreset.FullRect,
+            ProcessMode = ProcessModeEnum.Always,
+            ZIndex = 200
+        };
+
+        var center = new CenterContainer
+        {
+            LayoutMode = 1,
+            AnchorsPreset = (int)LayoutPreset.FullRect
+        };
+
+        var panel = new PanelContainer { CustomMinimumSize = new Vector2(440, 0) };
+        var style = new StyleBoxFlat
+        {
+            BgColor = GameTheme.DarkBg,
+            CornerRadiusTopLeft = 14, CornerRadiusTopRight = 14,
+            CornerRadiusBottomLeft = 14, CornerRadiusBottomRight = 14,
+            BorderWidthTop = 2, BorderWidthBottom = 2,
+            BorderWidthLeft = 2, BorderWidthRight = 2,
+            BorderColor = GameTheme.Gold,
+            ContentMarginTop = 28, ContentMarginBottom = 28,
+            ContentMarginLeft = 36, ContentMarginRight = 36
+        };
+        panel.AddThemeStyleboxOverride("panel", style);
+
+        var mainVBox = new VBoxContainer();
+        mainVBox.AddThemeConstantOverride("separation", 16);
+        panel.AddChild(mainVBox);
+
+        var titleLabel = GameTheme.MakeLabel("分组达标", 20, GameTheme.Gold, HorizontalAlignment.Center);
+        mainVBox.AddChild(titleLabel);
+        mainVBox.AddChild(new HSeparator());
+
+        var msg = GameTheme.MakeLabel(
+            $"当前词包 {groupLabel} 掌握度已达 {accuracy:F0}%（阈值：{threshold}%）\n是否切换词包？",
+            15, GameTheme.Cream, HorizontalAlignment.Center);
+        msg.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        mainVBox.AddChild(msg);
+
+        var btnRow = new HBoxContainer();
+        btnRow.Alignment = BoxContainer.AlignmentMode.Center;
+        btnRow.AddThemeConstantOverride("separation", 16);
+        mainVBox.AddChild(btnRow);
+
+        Action dismiss = () => overlay.QueueFree();
+
+        var switchBtn = new Button
+        {
+            Text = "  去选新词包  ",
+            CustomMinimumSize = new Vector2(160, 44)
+        };
+        switchBtn.AddThemeColorOverride("font_color", GameTheme.Gold);
+        switchBtn.AddThemeFontSizeOverride("font_size", 16);
+        switchBtn.Pressed += () =>
+        {
+            dismiss();
+            WordGroupPanel.Instance?.Refresh();
+        };
+        btnRow.AddChild(switchBtn);
+
+        var stayBtn = new Button
+        {
+            Text = "  继续巩固  ",
+            CustomMinimumSize = new Vector2(160, 44)
+        };
+        stayBtn.AddThemeColorOverride("font_color", GameTheme.LightGray);
+        stayBtn.AddThemeFontSizeOverride("font_size", 16);
+        stayBtn.Pressed += dismiss;
+        btnRow.AddChild(stayBtn);
+
+        center.AddChild(panel);
+        overlay.AddChild(center);
+        GetTree()?.Root?.AddChild(overlay);
+    }
+
+    /// <summary>战斗词池耗尽：弹三选一（从本局池补 / 从全词库补 / 不补）。</summary>
+    public void ShowCombatPoolExhaustedPrompt(float accuracy, int poolSize, bool hasRunPool)
+    {
+        if (_poolExhaustedPromptVisible) return;
+        _poolExhaustedPromptVisible = true;
+
+        var runPoolText = hasRunPool ? "\n  2. 从本局词池补充\n  3. 从全词库补充" : "\n  2. 从全词库补充";
+        var dialog = new AcceptDialog
+        {
+            Title = "战斗词池已掌握",
+            DialogText = $"本场战斗固定词池（{poolSize} 词）已全部学完！\n正确率：{accuracy:F0}%\n\n是否补充新词？\n  1. 不补充（继续用当前池）{runPoolText}",
+            Size = new Vector2I(520, 280),
+            Exclusive = true,
+            Unresizable = true,
+            ProcessMode = ProcessModeEnum.Always
+        };
+        dialog.AddThemeFontSizeOverride("font_size", 16);
+
+        // 用 Godot 的 ConfirmationDialog 不支持多按钮，这里直接加自定义按钮
+        dialog.GetOkButton()?.QueueFree();
+
+        var btnContainer = new HBoxContainer();
+        btnContainer.AddThemeConstantOverride("separation", 10);
+        dialog.AddChild(btnContainer);
+
+        var btn1 = new Button { Text = "  不补充 (1)  " };
+        btn1.AddThemeFontSizeOverride("font_size", 14);
+        btn1.Pressed += () => { _poolExhaustedPromptVisible = false; dialog.QueueFree(); };
+        btnContainer.AddChild(btn1);
+
+        if (hasRunPool)
+        {
+            var btn2 = new Button { Text = "  本局词池 (2)  " };
+            btn2.AddThemeFontSizeOverride("font_size", 14);
+            btn2.Pressed += () =>
+            {
+                VocabManager.Instance.InitCombatFixedWordPool();
+                _poolExhaustedPromptVisible = false;
+                dialog.QueueFree();
+            };
+            btnContainer.AddChild(btn2);
+        }
+
+        var btn3 = new Button { Text = "  全词库 (3)  " };
+        btn3.AddThemeFontSizeOverride("font_size", 14);
+        btn3.Pressed += () =>
+        {
+            VocabManager.Instance.ClearCombatFixedWordPool();
+            _poolExhaustedPromptVisible = false;
+            dialog.QueueFree();
+        };
+        btnContainer.AddChild(btn3);
+
+        var root = GetTree()?.Root;
+        root?.AddChild(dialog);
+        dialog.PopupCentered();
+    }
+
+    /// <summary>本局词池耗尽弹窗：问是否重掷。</summary>
+    public void ShowPoolExhaustedPrompt(float accuracy, int poolSize)
+    {
+        if (_poolExhaustedPromptVisible) return;
+        _poolExhaustedPromptVisible = true;
+
+        var dialog = new AcceptDialog
+        {
+            Title = "词池已掌握",
+            DialogText = $"本局固定词池（{poolSize} 词）已全部学完！\n正确率：{accuracy:F0}%\n\n是否重新随机抽取新词池？",
+            Size = new Vector2I(500, 230),
+            Exclusive = true,
+            Unresizable = true,
+            ProcessMode = ProcessModeEnum.Always
+        };
+        dialog.AddThemeFontSizeOverride("font_size", 16);
+        dialog.Confirmed += () =>
+        {
+            VocabManager.Instance.RerollCombatFixedWordPool();
+            _poolExhaustedPromptVisible = false;
+        };
+        dialog.Canceled += () => _poolExhaustedPromptVisible = false;
+        dialog.CloseRequested += () => _poolExhaustedPromptVisible = false;
+
+        var root = GetTree()?.Root;
+        root?.AddChild(dialog);
+        dialog.PopupCentered();
+    }
+
+    /// <summary>词池预览弹窗：使用与错题面板一致的 UI 风格。</summary>
+    public void ShowPoolPreview(string title, List<WordEntry> words, Action? onClosed = null)
+    {
+        var overlay = new ColorRect
+        {
+            Color = GameTheme.Backdrop,
+            LayoutMode = 1,
+            AnchorsPreset = (int)LayoutPreset.FullRect,
+            ProcessMode = ProcessModeEnum.Always,
+            ZIndex = 200
+        };
+
+        var center = new CenterContainer
+        {
+            LayoutMode = 1,
+            AnchorsPreset = (int)LayoutPreset.FullRect
+        };
+
+        var panel = new PanelContainer { CustomMinimumSize = new Vector2(580, 0) };
+        var style = new StyleBoxFlat
+        {
+            BgColor = GameTheme.DarkBg,
+            CornerRadiusTopLeft = 14, CornerRadiusTopRight = 14,
+            CornerRadiusBottomLeft = 14, CornerRadiusBottomRight = 14,
+            BorderWidthTop = 2, BorderWidthBottom = 2,
+            BorderWidthLeft = 2, BorderWidthRight = 2,
+            BorderColor = GameTheme.Gold,
+            ContentMarginTop = 24, ContentMarginBottom = 24,
+            ContentMarginLeft = 32, ContentMarginRight = 32
+        };
+        panel.AddThemeStyleboxOverride("panel", style);
+
+        var mainVBox = new VBoxContainer();
+        mainVBox.AddThemeConstantOverride("separation", 14);
+        panel.AddChild(mainVBox);
+
+        var titleLabel = GameTheme.MakeLabel(title, 20, GameTheme.Gold, HorizontalAlignment.Center);
+        mainVBox.AddChild(titleLabel);
+        mainVBox.AddChild(new HSeparator());
+
+        var scroll = new ScrollContainer { CustomMinimumSize = new Vector2(520, 320) };
+        mainVBox.AddChild(scroll);
+
+        var listContainer = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        listContainer.AddThemeConstantOverride("separation", 6);
+        scroll.AddChild(listContainer);
+
+        for (var i = 0; i < words.Count; i++)
+        {
+            var w = words[i];
+            var tag = w.SrsState switch
+            {
+                SrsState.Mastered => "  [已掌握]",
+                SrsState.Review => $"  [○{w.IntervalDays}d]",
+                SrsState.Learning => "  [学习中]",
+                SrsState.Relearning => "  [复习中]",
+                _ => ""
+            };
+
+            var row = new HBoxContainer();
+            row.AddThemeConstantOverride("separation", 8);
+
+            var numLabel = GameTheme.MakeLabel($"{i + 1,3}.", 14, GameTheme.LightGray);
+            numLabel.CustomMinimumSize = new Vector2(32, 0);
+            row.AddChild(numLabel);
+
+            var enLabel = GameTheme.MakeLabel(w.English, 15, GameTheme.Cream);
+            enLabel.CustomMinimumSize = new Vector2(140, 0);
+            row.AddChild(enLabel);
+
+            var cnLabel = GameTheme.MakeLabel(w.Chinese, 14, GameTheme.LightGray);
+            cnLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            cnLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            row.AddChild(cnLabel);
+
+            if (!string.IsNullOrEmpty(tag))
+                row.AddChild(GameTheme.MakeLabel(tag, 12, w.SrsState == SrsState.Mastered
+                    ? GameTheme.Green : GameTheme.MidGray));
+
+            listContainer.AddChild(row);
+        }
+
+        var btnCenter = new CenterContainer();
+        mainVBox.AddChild(btnCenter);
+
+        var dismissBtn = new Button
+        {
+            Text = "  关闭 (Enter)  ",
+            CustomMinimumSize = new Vector2(200, 44)
+        };
+        dismissBtn.AddThemeColorOverride("font_color", GameTheme.Gold);
+        dismissBtn.AddThemeFontSizeOverride("font_size", 16);
+
+        Action dismiss = () =>
+        {
+            overlay.QueueFree();
+            onClosed?.Invoke();
+        };
+        dismissBtn.Pressed += dismiss;
+
+        btnCenter.AddChild(dismissBtn);
+
+        // 键盘关闭
+        overlay.SetProcessInput(true);
+        overlay.GuiInput += e =>
+        {
+            if (e is InputEventKey { Pressed: true } k && k.Keycode is Key.Enter or Key.Escape or Key.Space)
+                dismiss();
+        };
+
+        center.AddChild(panel);
+        overlay.AddChild(center);
+        GetTree()?.Root?.AddChild(overlay);
+
+        dismissBtn.GrabFocus();
     }
 
     private static StyleBoxFlat MakeGoldButtonStyle(float alpha)
