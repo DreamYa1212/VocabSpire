@@ -107,36 +107,24 @@ public static class SettingsScreenPatch
         var normalStyle = new StyleBoxFlat
         {
             BgColor = BtnBg,
-            CornerRadiusTopLeft = 6,
-            CornerRadiusTopRight = 6,
-            CornerRadiusBottomLeft = 6,
-            CornerRadiusBottomRight = 6,
-            BorderWidthTop = 1,
-            BorderWidthBottom = 1,
-            BorderWidthLeft = 1,
-            BorderWidthRight = 1,
+            CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6,
+            BorderWidthTop = 1, BorderWidthBottom = 1,
+            BorderWidthLeft = 1, BorderWidthRight = 1,
             BorderColor = Gold,
-            ContentMarginLeft = 14,
-            ContentMarginRight = 14,
-            ContentMarginTop = 8,
-            ContentMarginBottom = 8
+            ContentMarginLeft = 14, ContentMarginRight = 14,
+            ContentMarginTop = 8, ContentMarginBottom = 8
         };
         var hoverStyle = new StyleBoxFlat
         {
             BgColor = BtnHover,
-            CornerRadiusTopLeft = 6,
-            CornerRadiusTopRight = 6,
-            CornerRadiusBottomLeft = 6,
-            CornerRadiusBottomRight = 6,
-            BorderWidthTop = 1,
-            BorderWidthBottom = 1,
-            BorderWidthLeft = 1,
-            BorderWidthRight = 1,
+            CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6,
+            BorderWidthTop = 1, BorderWidthBottom = 1,
+            BorderWidthLeft = 1, BorderWidthRight = 1,
             BorderColor = Gold,
-            ContentMarginLeft = 14,
-            ContentMarginRight = 14,
-            ContentMarginTop = 8,
-            ContentMarginBottom = 8
+            ContentMarginLeft = 14, ContentMarginRight = 14,
+            ContentMarginTop = 8, ContentMarginBottom = 8
         };
         btn.AddThemeStyleboxOverride("normal", normalStyle);
         btn.AddThemeStyleboxOverride("hover", hoverStyle);
@@ -146,4 +134,3 @@ public static class SettingsScreenPatch
         return btn;
     }
 }
-

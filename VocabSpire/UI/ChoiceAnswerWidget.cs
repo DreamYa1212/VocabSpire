@@ -230,10 +230,14 @@ public partial class ChoiceAnswerWidget : VBoxContainer
         var s = new StyleBoxFlat
         {
             BgColor = bg,
-            CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8,
-            CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
-            ContentMarginLeft = 16, ContentMarginRight = 16,
-            ContentMarginTop = 10, ContentMarginBottom = 10
+            CornerRadiusTopLeft = 8,
+            CornerRadiusTopRight = 8,
+            CornerRadiusBottomLeft = 8,
+            CornerRadiusBottomRight = 8,
+            ContentMarginLeft = 16,
+            ContentMarginRight = 16,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10
         };
         if (border.HasValue)
         {

@@ -1024,3 +1024,4 @@ public partial class QuizPanel : Control
         root.AddChild(panel);
     }
 }
+
