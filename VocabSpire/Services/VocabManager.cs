@@ -398,12 +398,19 @@ public sealed class VocabManager
         return _quizGenerator.Generate(_activeBank, pool, modes, optionCount, tier);
     }
 
-    public void RecordAnswer(WordEntry word, bool correct)
+    private string? _lastAnsweredWord;
+
+    public void RecordAnswer(WordEntry word, bool correct, WordBank? bankOverride = null)
     {
+        Log.Info($"[VocabSpire] RecordAnswer: word='{word.English}' correct={correct} " +
+                 $"cc_before={word.CorrectCount} bs_before={word.BestStreak}");
+        _lastAnsweredWord = word.English.ToLowerInvariant();
         if (correct)
         {
             word.CorrectCount++;
             word.Streak++;
+            if (word.Streak > word.BestStreak)
+                word.BestStreak = word.Streak;
         }
         else
         {
@@ -417,8 +424,8 @@ public sealed class VocabManager
         if (correct) VocabConfig.Instance.TotalCorrect++;
         VocabConfig.Instance.Save();
 
-        // 持久化单词进度
-        SaveProgress();
+        // 持久化单词进度（保存到该单词所属的词库文件）
+        SaveProgress(bankOverride ?? _activeBank ?? _banks[0]);
 
         // 分组达标检测
         CheckGroupMastered();
@@ -475,51 +482,71 @@ public sealed class VocabManager
 
     // ── 单词进度持久化 ──
 
-    private string ProgressFilePath
+    private string GetProgressFilePath(WordBank bank)
     {
-        get
-        {
-            var modDir = Path.GetDirectoryName(typeof(VocabManager).Assembly.Location) ?? ".";
-            return Path.Combine(modDir, "_word_progress.json");
-        }
+        var modDir = Path.GetDirectoryName(typeof(VocabManager).Assembly.Location) ?? ".";
+        return Path.Combine(modDir, $"_word_progress_{bank.Id}.json");
     }
 
-    public void SaveProgress()
+    public void SaveProgress(WordBank bank)
     {
         try
         {
-            var data = new Dictionary<string, Dictionary<string, object>>();
-            foreach (var bank in _banks)
-            {
-                foreach (var w in bank.Words)
-                {
-                    // 跳过无任何进度的词
-                    if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0
-                        && w.SrsState == SrsState.New && w.EaseFactor == SrsScheduler.DefaultEaseFactor)
-                        continue;
+            var path = GetProgressFilePath(bank);
+            Log.Info($"[VocabSpire] SaveProgress -> {path}");
 
-                    var key = w.English.ToLowerInvariant();
-                    var entry = new Dictionary<string, object>
-                    {
-                        ["cc"] = w.CorrectCount,
-                        ["wc"] = w.WrongCount,
-                        ["el"] = w.EnergyLost,
-                        ["st"] = w.Streak,
-                        // SM-2 fields
-                        ["srs"] = (int)w.SrsState,
-                        ["ef"] = w.EaseFactor,
-                        ["iv"] = w.IntervalDays,
-                        ["rp"] = w.Repetitions,
-                        ["dd"] = w.DueDateTicks,
-                        ["lr"] = w.LastReviewTicks,
-                        ["ls"] = w.LearningStepIndex
-                    };
-                    data[key] = entry;
-                }
+            var data = new Dictionary<string, Dictionary<string, object>>();
+            foreach (var w in bank.Words)
+            {
+                // 跳过无任何进度的词
+                if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0
+                    && w.BestStreak == 0
+                    && w.SrsState == SrsState.New && w.EaseFactor == SrsScheduler.DefaultEaseFactor)
+                    continue;
+
+                var key = w.English.ToLowerInvariant();
+                var entry = new Dictionary<string, object>
+                {
+                    ["cc"] = w.CorrectCount,
+                    ["wc"] = w.WrongCount,
+                    ["el"] = w.EnergyLost,
+                    ["st"] = w.Streak,
+                    ["bs"] = w.BestStreak,
+                    // SM-2 fields
+                    ["srs"] = (int)w.SrsState,
+                    ["ef"] = w.EaseFactor,
+                    ["iv"] = w.IntervalDays,
+                    ["rp"] = w.Repetitions,
+                    ["dd"] = w.DueDateTicks,
+                    ["lr"] = w.LastReviewTicks,
+                    ["ls"] = w.LearningStepIndex
+                };
+                data[key] = entry;
             }
             var json = System.Text.Json.JsonSerializer.Serialize(data,
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(ProgressFilePath, json);
+            File.WriteAllText(path, json);
+            // 验证：检查刚答过的词在文件中的实际内容
+            try
+            {
+                var checkWord = _lastAnsweredWord;
+                if (!string.IsNullOrEmpty(checkWord))
+                {
+                    var verifyJson = File.ReadAllText(path);
+                    var search = "\"" + checkWord + "\"";
+                    var idx = verifyJson.IndexOf(search);
+                    if (idx >= 0)
+                    {
+                        var snippet = verifyJson.Substring(idx, Math.Min(150, (int)(verifyJson.Length - idx)));
+                        Log.Info($"[VocabSpire] SaveProgress verify: {checkWord} in file -> {snippet.Replace("\n", "\\n")}");
+                    }
+                    else
+                    {
+                        Log.Warn($"[VocabSpire] SaveProgress verify: '{checkWord}' NOT FOUND in saved file!");
+                    }
+                }
+            }
+            catch { }
         }
         catch (Exception ex)
         {
@@ -531,37 +558,44 @@ public sealed class VocabManager
     {
         try
         {
-            if (!File.Exists(ProgressFilePath)) return;
+            var bank = _activeBank;
+            if (bank is null)
+            {
+                Log.Warn("[VocabSpire] LoadProgress: no active bank, skipping.");
+                return;
+            }
 
-            var json = File.ReadAllText(ProgressFilePath);
+            var path = GetProgressFilePath(bank);
+            Log.Info($"[VocabSpire] LoadProgress from {path} (exists={File.Exists(path)})");
+            if (!File.Exists(path)) return;
+
+            var json = File.ReadAllText(path);
             // 尝试新格式 (Dictionary<string, object>)，失败则回退旧格式 (int[])
             try
             {
                 var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>>(json);
                 if (data is null) return;
 
-                foreach (var bank in _banks)
+                foreach (var w in bank.Words)
                 {
-                    foreach (var w in bank.Words)
-                    {
-                        var key = w.English.ToLowerInvariant();
-                        if (!data.TryGetValue(key, out var entry)) continue;
+                    var key = w.English.ToLowerInvariant();
+                    if (!data.TryGetValue(key, out var entry)) continue;
 
-                        w.CorrectCount = entry.TryGetValue("cc", out var cc) && cc.TryGetInt32(out var ccv) ? ccv : 0;
-                        w.WrongCount = entry.TryGetValue("wc", out var wc) && wc.TryGetInt32(out var wcv) ? wcv : 0;
-                        w.EnergyLost = entry.TryGetValue("el", out var el) && el.TryGetInt32(out var elv) ? elv : 0;
-                        w.Streak = entry.TryGetValue("st", out var st) && st.TryGetInt32(out var stv) ? stv : 0;
-                        // SM-2 fields (optional, default if missing for backward compat)
-                        w.SrsState = entry.TryGetValue("srs", out var srs) && srs.TryGetInt32(out var srsv)
-                            ? (SrsState)srsv : SrsState.New;
-                        w.EaseFactor = entry.TryGetValue("ef", out var ef) && ef.TryGetSingle(out var efv)
-                            ? efv : SrsScheduler.DefaultEaseFactor;
-                        w.IntervalDays = entry.TryGetValue("iv", out var iv) && iv.TryGetInt32(out var ivv) ? ivv : 0;
-                        w.Repetitions = entry.TryGetValue("rp", out var rp) && rp.TryGetInt32(out var rpv) ? rpv : 0;
-                        w.DueDateTicks = entry.TryGetValue("dd", out var dd) && dd.TryGetInt64(out var ddv) ? ddv : 0;
-                        w.LastReviewTicks = entry.TryGetValue("lr", out var lr) && lr.TryGetInt64(out var lrv) ? lrv : 0;
-                        w.LearningStepIndex = entry.TryGetValue("ls", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 0;
-                    }
+                    w.CorrectCount = entry.TryGetValue("cc", out var cc) && cc.TryGetInt32(out var ccv) ? ccv : 0;
+                    w.WrongCount = entry.TryGetValue("wc", out var wc) && wc.TryGetInt32(out var wcv) ? wcv : 0;
+                    w.EnergyLost = entry.TryGetValue("el", out var el) && el.TryGetInt32(out var elv) ? elv : 0;
+                    w.Streak = entry.TryGetValue("st", out var st) && st.TryGetInt32(out var stv) ? stv : 0;
+                    w.BestStreak = entry.TryGetValue("bs", out var bs) && bs.TryGetInt32(out var bsv) ? bsv : w.Streak;
+                    // SM-2 fields (optional, default if missing for backward compat)
+                    w.SrsState = entry.TryGetValue("srs", out var srs) && srs.TryGetInt32(out var srsv)
+                        ? (SrsState)srsv : SrsState.New;
+                    w.EaseFactor = entry.TryGetValue("ef", out var ef) && ef.TryGetSingle(out var efv)
+                        ? efv : SrsScheduler.DefaultEaseFactor;
+                    w.IntervalDays = entry.TryGetValue("iv", out var iv) && iv.TryGetInt32(out var ivv) ? ivv : 0;
+                    w.Repetitions = entry.TryGetValue("rp", out var rp) && rp.TryGetInt32(out var rpv) ? rpv : 0;
+                    w.DueDateTicks = entry.TryGetValue("dd", out var dd) && dd.TryGetInt64(out var ddv) ? ddv : 0;
+                    w.LastReviewTicks = entry.TryGetValue("lr", out var lr) && lr.TryGetInt64(out var lrv) ? lrv : 0;
+                    w.LearningStepIndex = entry.TryGetValue("ls", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 0;
                 }
 
                 Log.Info($"[VocabSpire] Loaded SRS progress for {data.Count} words.");
@@ -584,18 +618,19 @@ public sealed class VocabManager
         var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int[]>>(json);
         if (data is null) return;
 
-        foreach (var bank in _banks)
+        var bank = _activeBank;
+        if (bank is null) return;
+
+        foreach (var w in bank.Words)
         {
-            foreach (var w in bank.Words)
-            {
-                var key = w.English.ToLowerInvariant();
-                if (!data.TryGetValue(key, out var stats)) continue;
-                w.CorrectCount = stats.Length > 0 ? stats[0] : 0;
-                w.WrongCount = stats.Length > 1 ? stats[1] : 0;
-                w.EnergyLost = stats.Length > 2 ? stats[2] : 0;
-                w.Streak = stats.Length > 3 ? stats[3] : 0;
-                // 旧格式无 SM-2 数据，保持默认值
-            }
+            var key = w.English.ToLowerInvariant();
+            if (!data.TryGetValue(key, out var stats)) continue;
+            w.CorrectCount = stats.Length > 0 ? stats[0] : 0;
+            w.WrongCount = stats.Length > 1 ? stats[1] : 0;
+            w.EnergyLost = stats.Length > 2 ? stats[2] : 0;
+            w.Streak = stats.Length > 3 ? stats[3] : 0;
+            w.BestStreak = w.Streak;
+            // 旧格式无 SM-2 数据，保持默认值
         }
 
         Log.Info($"[VocabSpire] Loaded legacy progress for {data.Count} words.");
@@ -736,14 +771,14 @@ public sealed class VocabManager
                 EndIndex = end
             };
 
-            // 同步进度（使用图鉴标准 + 打乱索引）
+            // 同步进度（使用 BestStreak 判断是否已掌握：一旦掌握就不会因答错降级）
             var masteryThreshold = VocabConfig.Instance.MasteryStreak;
             for (var i = start; i < end; i++)
             {
                 var w = words[_shuffledIndices.Length > i ? _shuffledIndices[i] : i];
                 group.CorrectCount += w.CorrectCount;
                 group.WrongCount += w.WrongCount;
-                if (w.Streak >= masteryThreshold)
+                if (w.BestStreak >= masteryThreshold)
                     group.MasteredCount++;
                 else if (w.CorrectCount + w.WrongCount > 0)
                     group.LearningCount++;
@@ -800,7 +835,7 @@ public sealed class VocabManager
                 var w = _activeBank.Words[_shuffledIndices.Length > i ? _shuffledIndices[i] : i];
                 group.CorrectCount += w.CorrectCount;
                 group.WrongCount += w.WrongCount;
-                if (w.Streak >= masteryThreshold)
+                if (w.BestStreak >= masteryThreshold)
                     group.MasteredCount++;
                 else if (w.CorrectCount + w.WrongCount > 0)
                     group.LearningCount++;

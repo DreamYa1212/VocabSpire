@@ -35,6 +35,7 @@ public partial class QuizPanel : Control
     private Button _easyBtn = null!;
 
     private QuizQuestion? _currentQuestion;
+    private WordBank? _currentBank;
     private Action<bool>? _onAnswered;
     private bool _answered;
     private bool _lastCorrect;
@@ -267,6 +268,7 @@ public partial class QuizPanel : Control
     public void ShowQuiz(QuizQuestion question, Action<bool> onAnswered)
     {
         _currentQuestion = question;
+        _currentBank = VocabManager.Instance.ActiveBank;
         _onAnswered = onAnswered;
         _answered = false;
         _graded = false;
@@ -449,7 +451,7 @@ public partial class QuizPanel : Control
     {
         if (_currentQuestion is null) return;
 
-        VocabManager.Instance.RecordAnswer(_currentQuestion.TargetWord, correct);
+        VocabManager.Instance.RecordAnswer(_currentQuestion.TargetWord, correct, _currentBank);
 
         var cfg = VocabConfig.Instance;
         var autoClose = correct && (cfg.AutoSubmitCorrect || cfg.SrsAutoContinueCorrectOnly);
@@ -498,7 +500,7 @@ public partial class QuizPanel : Control
         // 客观答错 �?SM-2 强制�?Again 处理（不管用户�?Hard 还是 Again�?
         var effectiveGrade = _lastCorrect ? grade : SrsGrade.Again;
         var correct = _lastCorrect;
-        VocabManager.Instance.RecordAnswer(word, correct);
+        VocabManager.Instance.RecordAnswer(word, correct, _currentBank);
 
         if (VocabConfig.Instance.EnableSrsMode)
             SrsScheduler.Grade(word, effectiveGrade);

@@ -35,6 +35,9 @@ public sealed class WordEntry
     /// <summary>当前连续答对次数（答错归零）。</summary>
     public int Streak { get; set; }
 
+    /// <summary>史上最高连续答对次数（不随答错归零）。用于判断是否已掌握。</summary>
+    public int BestStreak { get; set; }
+
     /// <summary>因答错该词损失的总能量。</summary>
     public int EnergyLost { get; set; }
 
