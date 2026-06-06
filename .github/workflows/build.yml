@@ -44,16 +44,21 @@ jobs:
         Copy-Item "VocabSpire/Resources/vocab_icon.png"     $dst/
         Copy-Item "VocabSpire/Resources/wordbanks/*.json" "$dst/wordbanks/"
         Copy-Item "VocabSpire/Resources/wordbanks/*.csv"  "$dst/wordbanks/"
-        Compress-Archive -Path "$dst/*" -DestinationPath "publish/VocabSpire.zip"
+        $ver = "$env:GITHUB_REF_NAME"
+        if ($ver -eq "") { $ver = "dev" }
+        Compress-Archive -Path "$dst/*" -DestinationPath "publish/VocabSpire-$ver.zip"
+        echo "ZIP_NAME=VocabSpire-$ver.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
         name: VocabSpire
-        path: publish/VocabSpire.zip
+        path: publish/VocabSpire-*.zip
 
     - name: Release
       if: startsWith(github.ref, 'refs/tags/v')
       uses: softprops/action-gh-release@v2
       with:
-        files: publish/VocabSpire.zip
+        files: publish/VocabSpire-${{ github.ref_name }}.zip
+        name: VocabSpire ${{ github.ref_name }}
+        tag_name: ${{ github.ref_name }}
