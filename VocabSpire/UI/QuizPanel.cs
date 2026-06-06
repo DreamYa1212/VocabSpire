@@ -442,7 +442,7 @@ public partial class QuizPanel : Control
             FinishAnswer(_lastCorrect);
     }
 
-    // ── �?SRS 模式：直接完成答�?──
+    // ── SRS 模式：直接完成答──
 
     /// <summary>�?SRS 模式下跳过评分，直接记录。答对时根据配置决定是否自动继续�?/summary>
     private void FinishAnswer(bool correct)

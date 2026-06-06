@@ -2,7 +2,7 @@ using System;
 using VocabSpire.Models;
 
 namespace VocabSpire.Services;
-
+//TODO 该功能目前未使用，先保留代码以备后续可能的 SM-2 调度功能扩展。
 /// <summary>
 /// SM-2 调度器：根据用户评分动态调整每张卡片的难度系数、间隔和到期日。
 /// 参考 Anki SM-2 算法实现。

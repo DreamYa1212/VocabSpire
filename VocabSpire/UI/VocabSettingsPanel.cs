@@ -697,6 +697,30 @@ public partial class VocabSettingsPanel : Control
 
         groupRow.AddChild(GameTheme.MakeLabel($"（当前词库 {VocabManager.Instance.ActiveBank?.TotalWords ?? 0} 词，将分 {(VocabManager.Instance.ActiveBank is { } b && cfg.GroupSize > 0 ? (int)Math.Ceiling((double)b.TotalWords / cfg.GroupSize) : 0)} 组）", 12, DimGrey));
 
+        // 打乱种子
+        var seedRow = new HBoxContainer();
+        seedRow.AddThemeConstantOverride("separation", 10);
+        vbox.AddChild(seedRow);
+        seedRow.AddChild(GameTheme.MakeLabel("打乱种子：", 13, White));
+
+        var seedInput = new SpinBox
+        {
+            MinValue = 0,
+            MaxValue = 999999,
+            Step = 1,
+            Value = cfg.GroupShuffleSeed,
+            CustomMinimumSize = new Vector2(100, 0)
+        };
+        seedInput.ValueChanged += val =>
+        {
+            VocabConfig.Instance.GroupShuffleSeed = (int)val;
+            VocabConfig.Instance.Save();
+            VocabManager.Instance.RegenerateGroups();
+        };
+        seedRow.AddChild(seedInput);
+
+        seedRow.AddChild(GameTheme.MakeLabel("（0=自动；改数字可重新洗牌分组，相同数字永远相同分组）", 12, DimGrey));
+
         // 达标阈值
         var thresholdRow = new HBoxContainer();
         thresholdRow.AddThemeConstantOverride("separation", 10);

@@ -38,8 +38,9 @@ public sealed class WordEntry
     /// <summary>因答错该词损失的总能量。</summary>
     public int EnergyLost { get; set; }
 
-    // ── SM-2 算法字段 ──
-
+    //! ── SM-2 算法字段 ──
+    //!该功能因为与 Streak 机制有冲突，功能未完善，不推荐使用。
+    //TODO: 未来如果要完善 SM-2 功能，需要重新设计与 Streak 的关系，或者将两套机制分开管理。
     /// <summary>SM-2 记忆状态。</summary>
     public SrsState SrsState { get; set; } = SrsState.New;
 

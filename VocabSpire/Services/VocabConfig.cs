@@ -9,17 +9,17 @@ namespace VocabSpire.Services;
 /// <summary>奖励类型。0=无；1-5 基础；6+ 第二期。</summary>
 public enum RewardType
 {
-    None      = 0,
-    Hp        = 1,
-    Energy    = 2,
-    Gold      = 3,
-    Strength  = 4,
+    None = 0,
+    Hp = 1,
+    Energy = 2,
+    Gold = 3,
+    Strength = 4,
     Dexterity = 5,
-    Block     = 6,  // 覆甲
-    Draw      = 7,  // 抽牌
-    Thorns    = 8,  // 荆棘
-    Focus     = 9,  // 集中
-    Artifact  = 10  // 人工制品
+    Block = 6,  // 覆甲
+    Draw = 7,  // 抽牌
+    Thorns = 8,  // 荆棘
+    Focus = 9,  // 集中
+    Artifact = 10  // 人工制品
 }
 
 /// <summary>可自定义的功能键动作（用于按键冲突检测）。</summary>
@@ -140,6 +140,9 @@ public sealed class VocabConfig
 
     /// <summary>分组达标正确率阈值（0-100）。默认 80%。</summary>
     public int GroupMasteryThreshold { get; set; } = 80;
+
+    /// <summary>分组 shuffle 种子（0=自动用词库名确定性哈希）。修改后重新切分分组。</summary>
+    public int GroupShuffleSeed { get; set; }
 
     /// <summary>本局游戏固定单词数量（0=不启用）。开启后整局从随机选出的这批词中出题。</summary>
     public int RunFixedWordCount { get; set; }
@@ -274,13 +277,13 @@ public sealed class VocabConfig
             // 5 个新开关分别 fallback 到旧 legacy 字段（默认 true）。
             var legacy = data.EnableDifficultyScaling;
             EnableConfusionDistractor = data.EnableConfusionDistractor ?? legacy;
-            EnableOptionCountScaling  = data.EnableOptionCountScaling  ?? legacy;
-            EnableForceSpelling       = data.EnableForceSpelling       ?? legacy;
-            EnableReverseMode         = data.EnableReverseMode         ?? legacy;
+            EnableOptionCountScaling = data.EnableOptionCountScaling ?? legacy;
+            EnableForceSpelling = data.EnableForceSpelling ?? legacy;
+            EnableReverseMode = data.EnableReverseMode ?? legacy;
 
             if (data.ForceSpellingChanceAct2Percent is { } a2 && a2 >= 0) ForceSpellingChanceAct2Percent = Math.Clamp(a2, 0, 100);
             if (data.ForceSpellingChanceAct3Percent is { } a3 && a3 >= 0) ForceSpellingChanceAct3Percent = Math.Clamp(a3, 0, 100);
-            if (data.ReverseModeChancePercent is { } rv && rv >= 0)       ReverseModeChancePercent       = Math.Clamp(rv, 0, 100);
+            if (data.ReverseModeChancePercent is { } rv && rv >= 0) ReverseModeChancePercent = Math.Clamp(rv, 0, 100);
             AlwaysShowPhonetic = data.AlwaysShowPhonetic ?? false;
 
             UsePerActModes = data.UsePerActModes;
@@ -347,6 +350,7 @@ public sealed class VocabConfig
             if (data.GroupSize > 0) GroupSize = data.GroupSize;
             ActiveGroupIndex = data.ActiveGroupIndex;
             if (data.GroupMasteryThreshold > 0) GroupMasteryThreshold = data.GroupMasteryThreshold;
+            GroupShuffleSeed = data.GroupShuffleSeed;
             // FreePassStock 不在 config 中持久化——由 RunBattleState 按 Run 管理
 
             // 迁移旧配置：quiz_mode (单选) → quiz_mode_flags (多选)
@@ -436,7 +440,8 @@ public sealed class VocabConfig
                 ShowPoolPreview = ShowPoolPreview,
                 GroupSize = GroupSize,
                 ActiveGroupIndex = ActiveGroupIndex,
-                GroupMasteryThreshold = GroupMasteryThreshold
+                GroupMasteryThreshold = GroupMasteryThreshold,
+                GroupShuffleSeed = GroupShuffleSeed
             };
 
             var options = new JsonSerializerOptions { WriteIndented = true };
@@ -637,5 +642,8 @@ public sealed class VocabConfig
 
         [JsonPropertyName("group_mastery_threshold")]
         public int GroupMasteryThreshold { get; set; } = 80;
+
+        [JsonPropertyName("group_shuffle_seed")]
+        public int GroupShuffleSeed { get; set; }
     }
 }

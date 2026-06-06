@@ -717,8 +717,10 @@ public sealed class VocabManager
 
         var words = _activeBank.Words;
 
-        // 打乱索引（固定种子保证重启后相同）
-        var shuffleRng = new Random(_activeBank.Id.GetHashCode());
+        // 打乱索引（用户可设置种子，否则用词库名确定性哈希保证重启后不变）
+        var seed = VocabConfig.Instance.GroupShuffleSeed;
+        if (seed == 0) seed = DeterministicHash(_activeBank.Id);
+        var shuffleRng = new Random(seed);
         _shuffledIndices = Enumerable.Range(0, words.Count).OrderBy(_ => shuffleRng.Next()).ToArray();
 
         var totalGroups = (int)Math.Ceiling((double)words.Count / groupSize);
@@ -899,4 +901,15 @@ public sealed class VocabManager
             threshold);
     }
     private bool _groupMasteredPromptShown;
+
+    /// <summary>确定性哈希（跨进程稳定，不受 .NET string.GetHashCode 随机化影响）。</summary>
+    private static int DeterministicHash(string s)
+    {
+        unchecked
+        {
+            int hash = 17;
+            foreach (char c in s) hash = hash * 31 + c;
+            return hash;
+        }
+    }
 }
