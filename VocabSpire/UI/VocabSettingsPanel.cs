@@ -315,7 +315,13 @@ public partial class VocabSettingsPanel : Control
         _perActContainer.AddChild(reviewDesc);
 
         // ── SRS / SM-2 调度（独立于分层模式，始终可见）──
-        vbox.AddChild(GameTheme.MakeLabel("-- SRS 智能调度 --", 22, SectionColor));
+        var srsHeader = new HBoxContainer();
+        srsHeader.AddThemeConstantOverride("separation", 10);
+        srsHeader.AddChild(GameTheme.MakeLabel("-- SRS 智能调度 --", 22, SectionColor));
+        var srsWip = GameTheme.MakeLabel("【开发中】", 14, Colors.Gray);
+        srsWip.AddThemeColorOverride("font_color", new Color(0.8f, 0.4f, 0.2f)); // 橙褐色
+        srsHeader.AddChild(srsWip);
+        vbox.AddChild(srsHeader);
 
         var srsToggle = new CheckButton
         {
@@ -326,7 +332,7 @@ public partial class VocabSettingsPanel : Control
         vbox.AddChild(srsToggle);
 
         var srsDesc = GameTheme.MakeLabel(
-            "按艾宾浩斯遗忘曲线动态调整复习间隔，优先复习遗忘词", 16, DimGrey);
+            "按艾宾浩斯遗忘曲线动态调整复习间隔，优先复习遗忘词（功能尚未完善）", 16, DimGrey);
         vbox.AddChild(srsDesc);
 
         // SRS 子选项容器（仅 SRS 开启时可见）

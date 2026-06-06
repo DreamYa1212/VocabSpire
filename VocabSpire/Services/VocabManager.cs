@@ -696,7 +696,7 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 初始化本场战斗固定词池。从当前有效词池（分组池或全词库）中随机选取。
+    /// 初始化本场战斗固定词池。仅在分组模式开启时生效，从当前分组池中随机选取。
     /// </summary>
     public void InitCombatFixedWordPool()
     {
@@ -704,8 +704,10 @@ public sealed class VocabManager
         if (_activeBank is null) return;
         var cfg = VocabConfig.Instance;
         if (cfg.CombatFixedWordCount <= 0) return;
+        // 仅在分组（词包）开启时使用固定词池
+        if (_activeGroupWordPool is null) return;
 
-        var sourcePool = _activeGroupWordPool ?? _activeBank.Words;
+        var sourcePool = _activeGroupWordPool;
         if (sourcePool.Count <= cfg.CombatFixedWordCount) return;
 
         var rng = new Random(Guid.NewGuid().GetHashCode());
