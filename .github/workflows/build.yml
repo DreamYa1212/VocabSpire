@@ -37,7 +37,7 @@ jobs:
         Copy-Item "$src/VocabSpire.runtimeconfig.json" $dst/
         Copy-Item "$src/GodotSharp.dll"           $dst/
         Copy-Item "$src/ZstdSharp.dll"            $dst/
-        Copy-Item "VocabSpire/vocab_icon.png"     $dst/
+        Copy-Item "VocabSpire/Resources/vocab_icon.png"     $dst/
         Copy-Item "VocabSpire/Resources/wordbanks/*.json" "$dst/wordbanks/"
         Copy-Item "VocabSpire/Resources/wordbanks/*.csv"  "$dst/wordbanks/"
         Compress-Archive -Path "$dst/*" -DestinationPath "publish/VocabSpire.zip"
