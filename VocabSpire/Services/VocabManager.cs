@@ -89,11 +89,11 @@ public sealed class VocabManager
         // 加载持久化的单词进度
         LoadProgress();
 
-        // 初始化分�?
+        // 初始化分组
         RegenerateGroups();
         LoadGroupProgress();
 
-        // 恢复上次选中的分�?
+        // 恢复上次选中的分组
         var savedGroupIndex = VocabConfig.Instance.ActiveGroupIndex;
         if (savedGroupIndex >= 0 && savedGroupIndex < _wordGroups.Count)
             SelectGroup(savedGroupIndex);
@@ -114,8 +114,8 @@ public sealed class VocabManager
     {
         var ext = Path.GetExtension(filePath).ToLowerInvariant();
 
-        // apkg 特殊处理：解析为词条后序列化�?json 存入 wordbanks
-        // （apkg 是二进制，LoadAllBanks 只扫�?json/csv，必须先�?json�?
+        // apkg 特殊处理：解析为词条后序列化成 json 存入 wordbanks
+        // （apkg 是二进制，LoadAllBanks 只扫描 json/csv，必须先转 json）
         if (ext == ".apkg")
             return ImportApkg(filePath);
 
@@ -153,8 +153,8 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 导入 Anki .apkg 词库：用纯托�?reader 解析后序列化�?VocabSpire json 存入 wordbanks 目录�?
-    /// 再按普�?json 加载（保证与其它词库行为一致，且下次启动可直接扫描到）�?
+    /// 导入 Anki .apkg 词库：用纯托管 reader 解析后序列化成 VocabSpire json 存入 wordbanks 目录，
+    /// 再按普通 json 加载（保证与其它词库行为一致，且下次启动可直接扫描到）。
     /// </summary>
     private WordBank? ImportApkg(string apkgPath)
     {
@@ -162,7 +162,7 @@ public sealed class VocabManager
         {
             var parsed = ApkgImporter.Import(apkgPath);
 
-            // 多义项写成数组，单义项写成字符串，与现有词库 json 格式一�?
+            // 多义项写成数组，单义项写成字符串，与现有词库 json 格式一致
             var dto = new
             {
                 name = parsed.Name,
@@ -195,7 +195,7 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 导出词库模板文件�?wordbanks 目录�?
+    /// 导出词库模板文件到 wordbanks 目录。
     /// </summary>
     public string ExportTemplate()
     {
@@ -207,7 +207,7 @@ public sealed class VocabManager
             {
                 new { english = "apple", chinese = "n. 苹果", phonetic = "/ˈæp.əl/" },
                 new { english = "run", chinese = new[] { "v. 跑步", "vi. 运转", "n. 竞赛" }, phonetic = "/rʌn/" },
-                new { english = "book", chinese = "n. �? v. 预订", phonetic = "/bʊk/" }
+                new { english = "book", chinese = "n. 书; v. 预订", phonetic = "/bʊk/" }
             }
         };
 
@@ -227,7 +227,7 @@ public sealed class VocabManager
         // 检测新局开始，清空已测试词记录
         DetectRunBoundary();
 
-        // SRS 模式：使�?SM-2 优先级出�?
+        // SRS 模式：使用 SM-2 优先级出题
         if (VocabConfig.Instance.EnableSrsMode)
             return GenerateQuizSrs();
 
@@ -238,15 +238,15 @@ public sealed class VocabManager
         var cfg = VocabConfig.Instance;
         var modes = cfg.GetModesForAct(tier);
 
-        // ── 词池优先级：分组�?> 本场战斗固定�?> 本局固定�?> 完整词库 ──
+        // ── 词池优先级：分组池 > 本场战斗固定池 > 本局固定池 > 完整词库 ──
         if (_activeGroupWordPool is { Count: >= 2 })
             return _quizGenerator.Generate(_activeBank, _activeGroupWordPool, modes, cfg.OptionCount, tier);
 
         var combatPool = GetCombatFixedWordPool();
         if (combatPool is { Count: >= 2 })
         {
-            // 战斗固定池直接使用（不叠加拼写复�?可选模式，因为池子已经足够小）
-            // 但如果开启了拼写复习，仍在战斗池内过�?
+            // 战斗固定池直接使用（不叠加拼写复习/可选模式，因为池子已经足够小）
+            // 但如果开启了拼写复习，仍在战斗池内过滤
             if (cfg.SpellingReviewOnly && tier >= 2 && modes.HasFlag(QuizModeFlags.SpellEnglish))
             {
                 var reviewPool = combatPool
@@ -275,8 +275,8 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// SRS 模式出题：按 SM-2 优先级（Relearning > Due Review > New）选词�?
-    /// 尊重固定词池约束（战斗池 > 本局�?> 全词库），仅在有效词池内�?SRS 调度�?
+    /// SRS 模式出题：按 SM-2 优先级（Relearning > Due Review > New）选词。
+    /// 尊重固定词池约束（战斗池 > 本局池 > 全词库），仅在有效词池内做 SRS 调度。
     /// </summary>
     public QuizQuestion? GenerateQuizSrs()
     {
@@ -291,7 +291,7 @@ public sealed class VocabManager
         var modes = cfg.GetModesForAct(tier);
         var now = DateTime.UtcNow;
 
-        // ── 确定有效词池：分组池 > 战斗�?> 全词�?──
+        // ── 确定有效词池：分组池 > 战斗池 > 全词库 ──
         List<WordEntry>? effectivePool = null;
 
         if (_activeGroupWordPool is { Count: >= 2 })
@@ -303,10 +303,10 @@ public sealed class VocabManager
                 effectivePool = combatPool;
         }
 
-        // 拼写复习模式的过滤在 SRS 调度之后处理（优先级更高�?
+        // 拼写复习模式的过滤在 SRS 调度之后处理（优先级更高）
         var words = effectivePool ?? _activeBank.Words;
 
-        // 排除已掌握的词（Mastered 状态不参与日常出题�?
+        // 排除已掌握的词（Mastered 状态不参与日常出题）
         var activeWords = words.Where(w => w.SrsState != SrsState.Mastered).ToList();
         if (activeWords.Count < 2)
             activeWords = words.ToList(); // 全是 Mastered 时回退
@@ -339,7 +339,7 @@ public sealed class VocabManager
         {
             if (effectivePool is not null)
             {
-                // 固定词池模式：新词照出，不受每日上限约束（池子本身就够小�?
+                // 固定词池模式：新词照出，不受每日上限约束（池子本身就够小）
                 if (newWords.Count >= 2)
                     return GenerateFromPool(newWords, modes, cfg.OptionCount, tier, modes);
             }
@@ -358,7 +358,7 @@ public sealed class VocabManager
                 return GenerateFromPool(reviewDuePool, modes, cfg.OptionCount, tier, modes);
         }
 
-        // 4. 实在没有：任意未到期 Review 词（摊还�?
+        // 4. 实在没有：任意未到期 Review 词（摊还）
         var anyReview = activeWords
             .Where(w => w.SrsState == SrsState.Review)
             .OrderBy(w => w.DueDateTicks)
@@ -366,7 +366,7 @@ public sealed class VocabManager
         if (anyReview.Count >= 2)
             return GenerateFromPool(anyReview, modes, cfg.OptionCount, tier, modes);
 
-        // 5. 回退：任意已有进度的词（�?New �?Mastered�?
+        // 5. 回退：任意已有进度的词（非 New 非 Mastered）
         var anyProgress = activeWords
             .Where(w => w.SrsState != SrsState.New)
             .OrderBy(w => w.DueDateTicks)
@@ -379,7 +379,7 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 从指定词池生成题目。如果开启拼写复习模式且符合条件，在池内过滤已测词�?
+    /// 从指定词池生成题目。如果开启拼写复习模式且符合条件，在池内过滤已测词。
     /// </summary>
     private QuizQuestion? GenerateFromPool(List<WordEntry> pool, QuizModeFlags modes, int optionCount, int tier, QuizModeFlags globalModes)
     {
@@ -417,19 +417,19 @@ public sealed class VocabManager
         if (correct) VocabConfig.Instance.TotalCorrect++;
         VocabConfig.Instance.Save();
 
-        // 持久化单词进�?
+        // 持久化单词进度
         SaveProgress();
 
-        // 分组达标检�?
+        // 分组达标检测
         CheckGroupMastered();
 
-        // SRS 固定词池耗尽检�?
+        // SRS 固定词池耗尽检测
         CheckPoolExhausted();
     }
 
     /// <summary>
-    /// 检测固定词池是否耗尽�?
-    /// 战斗池耗尽 �?弹窗问从本局池还是全词库补；本局池耗尽 �?弹窗问是否重掷�?
+    /// 检测固定词池是否耗尽。
+    /// 战斗池耗尽 → 弹窗问从本局池还是全词库补；本局池耗尽 → 弹窗问是否重掷。
     /// </summary>
     private void CheckPoolExhausted()
     {
@@ -473,7 +473,7 @@ public sealed class VocabManager
 
     private bool _poolExhaustedPromptShown;
 
-    // ── 单词进度持久�?──
+    // ── 单词进度持久化 ──
 
     private string ProgressFilePath
     {
@@ -493,7 +493,7 @@ public sealed class VocabManager
             {
                 foreach (var w in bank.Words)
                 {
-                    // 跳过无任何进度的�?
+                    // 跳过无任何进度的词
                     if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0
                         && w.SrsState == SrsState.New && w.EaseFactor == SrsScheduler.DefaultEaseFactor)
                         continue;
@@ -534,7 +534,7 @@ public sealed class VocabManager
             if (!File.Exists(ProgressFilePath)) return;
 
             var json = File.ReadAllText(ProgressFilePath);
-            // 尝试新格�?(Dictionary<string, object>)，失败则回退旧格�?(int[])
+            // 尝试新格式 (Dictionary<string, object>)，失败则回退旧格式 (int[])
             try
             {
                 var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>>(json);
@@ -578,7 +578,7 @@ public sealed class VocabManager
         }
     }
 
-    /// <summary>兼容旧版 int[] 格式的进度加载�?/summary>
+    /// <summary>兼容旧版 int[] 格式的进度加载。</summary>
     private void LoadProgressLegacy(string json)
     {
         var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int[]>>(json);
@@ -594,7 +594,7 @@ public sealed class VocabManager
                 w.WrongCount = stats.Length > 1 ? stats[1] : 0;
                 w.EnergyLost = stats.Length > 2 ? stats[2] : 0;
                 w.Streak = stats.Length > 3 ? stats[3] : 0;
-                // 旧格式无 SM-2 数据，保持默认�?
+                // 旧格式无 SM-2 数据，保持默认值
             }
         }
 
@@ -614,13 +614,13 @@ public sealed class VocabManager
                 _poolExhaustedPromptShown = false;
                 _groupMasteredPromptShown = false;
 
-                // 分组预览（分组激活时显示当前分组信息�?
+                // 分组预览（分组激活时显示当前分组信息）
                 if (VocabConfig.Instance.ShowPoolPreview && _activeGroupWordPool is { Count: > 0 })
                 {
                     var panel = UI.QuizPanel.Instance;
                     if (panel is not null)
                     {
-                        panel.PendingPoolPreviewTitle = $"当前词包 {ActiveGroup?.Label} ({_activeGroupWordPool.Count} �?";
+                        panel.PendingPoolPreviewTitle = $"当前词包 {ActiveGroup?.Label} ({_activeGroupWordPool.Count} 词)";
                         panel.PendingPoolPreviewWords = _activeGroupWordPool;
                         panel.CallDeferred(nameof(UI.QuizPanel.ShowPendingPoolPreview));
                     }
@@ -635,7 +635,7 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 初始化本场战斗固定词池。从当前有效词池（分组池或全词库）中随机选取�?
+    /// 初始化本场战斗固定词池。从当前有效词池（分组池或全词库）中随机选取。
     /// </summary>
     public void InitCombatFixedWordPool()
     {
@@ -656,7 +656,7 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 强制重新初始化本场战斗固定词池（玩家手动重掷）�?
+    /// 强制重新初始化本场战斗固定词池（玩家手动重掷）。
     /// </summary>
     public void RerollCombatFixedWordPool()
     {
@@ -664,16 +664,16 @@ public sealed class VocabManager
     }
 
     /// <summary>
-    /// 获取本场战斗固定词池（如果有的话）�?
+    /// 获取本场战斗固定词池（如果有的话）。
     /// </summary>
     public List<WordEntry>? GetCombatFixedWordPool() => _combatFixedWordPool;
 
-    /// <summary>清空本场战斗固定词池，回退到本局池或全词库�?/summary>
+    /// <summary>清空本场战斗固定词池，回退到本局池或全词库。</summary>
     public void ClearCombatFixedWordPool() => _combatFixedWordPool = null;
 
     /// <summary>
-    /// 获取本局已测试过的词（用于拼写复习）�?
-    /// 若已测试词不足则回退到完整词库�?
+    /// 获取本局已测试过的词（用于拼写复习）。
+    /// 若已测试词不足则回退到完整词库。
     /// </summary>
     private List<WordEntry> GetReviewWordPool()
     {
@@ -689,21 +689,21 @@ public sealed class VocabManager
 
     // ── 分组记忆 ──
 
-    /// <summary>获取分组列表（只读）�?/summary>
+    /// <summary>获取分组列表（只读）。</summary>
     public IReadOnlyList<WordGroup> WordGroups => _wordGroups.AsReadOnly();
 
-    /// <summary>当前激活的分组索引�?1 = 未激�?全部）�?/summary>
+    /// <summary>当前激活的分组索引（-1 = 未激活/全部）。</summary>
     public int ActiveGroupIndex => _activeGroupIndex;
 
-    /// <summary>当前激活的分组�?/summary>
+    /// <summary>当前激活的分组。</summary>
     public WordGroup? ActiveGroup => _activeGroupIndex >= 0 && _activeGroupIndex < _wordGroups.Count
         ? _wordGroups[_activeGroupIndex] : null;
 
-    /// <summary>分组模式下当前有效的词池（即当前分组的词列表）�?/summary>
+    /// <summary>分组模式下当前有效的词池（即当前分组的词列表）。</summary>
     public List<WordEntry>? ActiveGroupWordPool => _activeGroupWordPool;
 
     /// <summary>
-    /// 根据 GroupSize 重新切分词库，并同步各组的进度统计�?
+    /// 根据 GroupSize 重新切分词库，并同步各组的进度统计。
     /// </summary>
     public void RegenerateGroups()
     {
@@ -717,7 +717,7 @@ public sealed class VocabManager
 
         var words = _activeBank.Words;
 
-        // 打乱索引（固定种子保证重启后相同�?
+        // 打乱索引（固定种子保证重启后相同）
         var shuffleRng = new Random(_activeBank.Id.GetHashCode());
         _shuffledIndices = Enumerable.Range(0, words.Count).OrderBy(_ => shuffleRng.Next()).ToArray();
 
@@ -734,7 +734,7 @@ public sealed class VocabManager
                 EndIndex = end
             };
 
-            // 同步进度（使用图鉴标�?+ 打乱索引�?
+            // 同步进度（使用图鉴标准 + 打乱索引）
             var masteryThreshold = VocabConfig.Instance.MasteryStreak;
             for (var i = start; i < end; i++)
             {
@@ -755,7 +755,7 @@ public sealed class VocabManager
         Log.Info($"[VocabSpire] Regenerated {totalGroups} word groups (size={groupSize}, total={words.Count}).");
     }
 
-    /// <summary>选择激活分组（-1 = 取消分组，恢复全词库）�?/summary>
+    /// <summary>选择激活分组（-1 = 取消分组，恢复全词库）。</summary>
     public void SelectGroup(int groupIndex)
     {
         if (groupIndex < 0 || groupIndex >= _wordGroups.Count)
@@ -781,7 +781,7 @@ public sealed class VocabManager
         Log.Info($"[VocabSpire] Active group: {group.Label} ({group.RangeText}, {group.Count} words).");
     }
 
-    /// <summary>刷新所有分组的进度统计，使用图鉴标准（Streak >= MasteryStreak）�?/summary>
+    /// <summary>刷新所有分组的进度统计，使用图鉴标准（Streak >= MasteryStreak）。</summary>
     public void RefreshGroupStats()
     {
         if (_activeBank is null) return;
@@ -808,7 +808,7 @@ public sealed class VocabManager
         }
     }
 
-    /// <summary>标记分组为已完成�?/summary>
+    /// <summary>标记分组为已完成。</summary>
     public void MarkGroupCompleted(int groupIndex)
     {
         if (groupIndex >= 0 && groupIndex < _wordGroups.Count)
@@ -818,7 +818,7 @@ public sealed class VocabManager
         }
     }
 
-    /// <summary>分组进度持久化�?/summary>
+    /// <summary>分组进度持久化。</summary>
     public void SaveGroupProgress()
     {
         try
@@ -870,7 +870,7 @@ public sealed class VocabManager
         public bool Completed { get; set; }
     }
 
-    /// <summary>检查当前分组是否达标（与词汇图鉴标准统一：Streak >= MasteryStreak），达标时弹窗�?/summary>
+    /// <summary>检查当前分组是否达标（与词汇图鉴标准统一：Streak >= MasteryStreak），达标时弹窗。</summary>
     private void CheckGroupMastered()
     {
         var group = ActiveGroup;
@@ -884,7 +884,7 @@ public sealed class VocabManager
         var hasUntouched = _activeGroupWordPool.Any(w => w.CorrectCount + w.WrongCount == 0);
         if (hasUntouched) return;
 
-        // 条件 2：已掌握词数（Streak >= MasteryStreak）比例达�?
+        // 条件 2：已掌握词数（Streak >= MasteryStreak）比例达标
         var total = _activeGroupWordPool.Count;
         var mastered = _activeGroupWordPool.Count(w => w.Streak >= masteryThreshold);
         var masteredPct = (float)mastered / total * 100f;
@@ -899,334 +899,4 @@ public sealed class VocabManager
             threshold);
     }
     private bool _groupMasteredPromptShown;
-}
-
-        var wordbanksDir = Path.Combine(modDir, "wordbanks");
-
-        if (!Directory.Exists(wordbanksDir))
-        {
-            Directory.CreateDirectory(wordbanksDir);
-        }
-
-        return wordbanksDir;
-    }
-
-    public void LoadAllBanks()
-{
-    _banks.Clear();
-    var dir = GetWordBanksDirectory();
-
-    Log.Info($"[VocabSpire] Loading word banks from: {dir}");
-
-    foreach (var file in Directory.GetFiles(dir, "*.json"))
-    {
-        if (Path.GetFileName(file).StartsWith("_")) continue;
-        var bank = FileParser.ParseJson(file);
-        if (bank is not null)
-        {
-            _banks.Add(bank);
-            Log.Info($"[VocabSpire] Loaded: {bank.Name} ({bank.TotalWords} words)");
-        }
-    }
-
-    foreach (var file in Directory.GetFiles(dir, "*.csv"))
-    {
-        if (Path.GetFileName(file).StartsWith("_")) continue;
-        var bank = FileParser.ParseCsv(file);
-        if (bank is not null)
-        {
-            _banks.Add(bank);
-            Log.Info($"[VocabSpire] Loaded: {bank.Name} ({bank.TotalWords} words)");
-        }
-    }
-
-    Log.Info($"[VocabSpire] Total word banks: {_banks.Count}");
-
-    var activeBankId = VocabConfig.Instance.ActiveBankId;
-    if (!string.IsNullOrEmpty(activeBankId))
-    {
-        SetActiveBank(activeBankId);
-    }
-    else if (_banks.Count > 0)
-    {
-        SetActiveBank(_banks[0].Id);
-    }
-
-    // 加载持久化的单词进度
-    LoadProgress();
-}
-
-public void SetActiveBank(string bankId)
-{
-    _activeBank = _banks.FirstOrDefault(b => b.Id == bankId);
-    if (_activeBank is not null)
-    {
-        VocabConfig.Instance.ActiveBankId = bankId;
-        VocabConfig.Instance.Save();
-        Log.Info($"[VocabSpire] Active bank: {_activeBank.Name}");
-    }
-}
-
-public WordBank? ImportBank(string filePath)
-{
-    var ext = Path.GetExtension(filePath).ToLowerInvariant();
-
-    // apkg 特殊处理：解析为词条后序列化成 json 存入 wordbanks
-    // （apkg 是二进制，LoadAllBanks 只扫描 json/csv，必须先转 json）
-    if (ext == ".apkg")
-        return ImportApkg(filePath);
-
-    var bank = ext switch
-    {
-        ".json" => FileParser.ParseJson(filePath),
-        ".csv" => FileParser.ParseCsv(filePath),
-        _ => null
-    };
-
-    if (bank is null)
-    {
-        Log.Error($"[VocabSpire] Failed to import: {filePath}");
-        return null;
-    }
-
-    var destPath = Path.Combine(GetWordBanksDirectory(), Path.GetFileName(filePath));
-    if (!string.Equals(Path.GetFullPath(filePath), Path.GetFullPath(destPath), StringComparison.OrdinalIgnoreCase))
-    {
-        File.Copy(filePath, destPath, overwrite: true);
-    }
-
-    var existingIdx = _banks.FindIndex(b => b.Id == bank.Id);
-    if (existingIdx >= 0)
-    {
-        _banks[existingIdx] = bank;
-    }
-    else
-    {
-        _banks.Add(bank);
-    }
-
-    Log.Info($"[VocabSpire] Imported: {bank.Name} ({bank.TotalWords} words)");
-    return bank;
-}
-
-/// <summary>
-/// 导入 Anki .apkg 词库：用纯托管 reader 解析后序列化成 VocabSpire json 存入 wordbanks 目录，
-/// 再按普通 json 加载（保证与其它词库行为一致，且下次启动可直接扫描到）。
-/// </summary>
-private WordBank? ImportApkg(string apkgPath)
-{
-    try
-    {
-        var parsed = ApkgImporter.Import(apkgPath);
-
-        // 多义项写成数组，单义项写成字符串，与现有词库 json 格式一致
-        var dto = new
-        {
-            name = parsed.Name,
-            description = parsed.Description,
-            words = parsed.Words.Select(w => new
-            {
-                english = w.English,
-                chinese = w.Definitions.Count > 1
-                    ? (object)w.Definitions
-                    : (w.Definitions.Count == 1 ? w.Definitions[0] : w.Chinese),
-                phonetic = w.Phonetic
-            })
-        };
-        var json = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true });
-        var jsonPath = Path.Combine(GetWordBanksDirectory(), parsed.Id + ".json");
-        File.WriteAllText(jsonPath, json);
-
-        var bank = FileParser.ParseJson(jsonPath) ?? parsed;
-        var idx = _banks.FindIndex(b => b.Id == bank.Id);
-        if (idx >= 0) _banks[idx] = bank; else _banks.Add(bank);
-
-        Log.Info($"[VocabSpire] Imported apkg: {bank.Name} ({bank.TotalWords} words) -> {Path.GetFileName(jsonPath)}");
-        return bank;
-    }
-    catch (Exception ex)
-    {
-        Log.Error($"[VocabSpire] apkg import failed: {apkgPath} - {ex.Message}");
-        return null;
-    }
-}
-
-/// <summary>
-/// 导出词库模板文件到 wordbanks 目录。
-/// </summary>
-public string ExportTemplate()
-{
-    var template = new
-    {
-        name = "我的词库",
-        description = "在此填写词库描述",
-        words = new object[]
-        {
-                new { english = "apple", chinese = "n. 苹果", phonetic = "/ˈæp.əl/" },
-                new { english = "run", chinese = new[] { "v. 跑步", "vi. 运转", "n. 竞赛" }, phonetic = "/rʌn/" },
-                new { english = "book", chinese = "n. 书; v. 预订", phonetic = "/bʊk/" }
-        }
-    };
-
-    var options = new JsonSerializerOptions { WriteIndented = true };
-    var json = JsonSerializer.Serialize(template, options);
-
-    var path = Path.Combine(GetWordBanksDirectory(), "_TEMPLATE.json");
-    File.WriteAllText(path, json);
-    Log.Info($"[VocabSpire] Template exported to: {path}");
-    return path;
-}
-
-public QuizQuestion? GenerateQuiz()
-{
-    if (_activeBank is null || !_activeBank.IsValid) return null;
-
-    // 检测新局开始，清空已测试词记录
-    DetectRunBoundary();
-
-    var tier = VocabConfig.Instance.EnableDifficultyScaling
-        ? Math.Clamp(GameBridge.GetCurrentAct(), 1, 3)
-        : 1;
-
-    var cfg = VocabConfig.Instance;
-    var modes = cfg.GetModesForAct(tier);
-
-    // 拼写复习模式：Act2+ 且开启了"仅复习已测词"
-    if (cfg.SpellingReviewOnly && tier >= 2 && modes.HasFlag(QuizModeFlags.SpellEnglish))
-    {
-        var reviewPool = GetReviewWordPool();
-        if (reviewPool.Count >= 4)
-        {
-            return _quizGenerator.Generate(
-                _activeBank, reviewPool, modes,
-                cfg.OptionCount, tier);
-        }
-    }
-
-    return _quizGenerator.Generate(
-        _activeBank, modes, cfg.OptionCount, tier);
-}
-
-public void RecordAnswer(WordEntry word, bool correct)
-{
-    if (correct)
-    {
-        word.CorrectCount++;
-        word.Streak++;
-    }
-    else
-    {
-        word.WrongCount++;
-        word.Streak = 0; // 答错归零
-    }
-
-    _testedWordsThisRun.Add(word.English.ToLowerInvariant());
-
-    VocabConfig.Instance.TotalAnswered++;
-    if (correct) VocabConfig.Instance.TotalCorrect++;
-    VocabConfig.Instance.Save();
-
-    // 持久化单词进度
-    SaveProgress();
-}
-
-// ── 单词进度持久化 ──
-
-private string ProgressFilePath
-{
-    get
-    {
-        var modDir = Path.GetDirectoryName(typeof(VocabManager).Assembly.Location) ?? ".";
-        return Path.Combine(modDir, "_word_progress.json");
-    }
-}
-
-public void SaveProgress()
-{
-    try
-    {
-        var data = new Dictionary<string, int[]>();
-        foreach (var bank in _banks)
-        {
-            foreach (var w in bank.Words)
-            {
-                if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0) continue;
-                var key = w.English.ToLowerInvariant();
-                data[key] = new[] { w.CorrectCount, w.WrongCount, w.EnergyLost, w.Streak };
-            }
-        }
-        var json = System.Text.Json.JsonSerializer.Serialize(data,
-            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(ProgressFilePath, json);
-    }
-    catch (Exception ex)
-    {
-        Log.Error($"[VocabSpire] Failed to save progress: {ex.Message}");
-    }
-}
-
-public void LoadProgress()
-{
-    try
-    {
-        if (!File.Exists(ProgressFilePath)) return;
-
-        var json = File.ReadAllText(ProgressFilePath);
-        var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int[]>>(json);
-        if (data is null) return;
-
-        foreach (var bank in _banks)
-        {
-            foreach (var w in bank.Words)
-            {
-                var key = w.English.ToLowerInvariant();
-                if (!data.TryGetValue(key, out var stats)) continue;
-                w.CorrectCount = stats.Length > 0 ? stats[0] : 0;
-                w.WrongCount = stats.Length > 1 ? stats[1] : 0;
-                w.EnergyLost = stats.Length > 2 ? stats[2] : 0;
-                w.Streak = stats.Length > 3 ? stats[3] : 0;
-            }
-        }
-
-        Log.Info($"[VocabSpire] Loaded progress for {data.Count} words.");
-    }
-    catch (Exception ex)
-    {
-        Log.Error($"[VocabSpire] Failed to load progress: {ex.Message}");
-    }
-}
-
-private void DetectRunBoundary()
-{
-    try
-    {
-        var inRun = RunManager.Instance.IsInProgress;
-        if (inRun && !_wasInRun)
-        {
-            _testedWordsThisRun.Clear();
-            RunQuizTracker.Instance.Reset(); // 新局开始，重置追踪
-        }
-        _wasInRun = inRun;
-    }
-    catch
-    {
-        // RunManager 不可用时忽略
-    }
-}
-
-/// <summary>
-/// 获取本局已测试过的词（用于拼写复习）。
-/// 若已测试词不足则回退到完整词库。
-/// </summary>
-private List<WordEntry> GetReviewWordPool()
-{
-    if (_activeBank is null) return new();
-    if (_testedWordsThisRun.Count < 4) return _activeBank.Words;
-
-    var filtered = _activeBank.Words
-        .Where(w => _testedWordsThisRun.Contains(w.English.ToLowerInvariant()))
-        .ToList();
-
-    return filtered.Count >= 4 ? filtered : _activeBank.Words;
-}
 }
