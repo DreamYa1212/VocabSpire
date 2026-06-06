@@ -24,8 +24,26 @@ jobs:
     - name: Build
       run: dotnet build VocabSpire/VocabSpire.csproj -c Release --no-restore
 
+    - name: Package zip
+      shell: pwsh
+      run: |
+        $src = "VocabSpire/.godot/mono/temp/bin/Release"
+        $dst = "publish/VocabSpire"
+        New-Item -ItemType Directory -Path "$dst/wordbanks" -Force | Out-Null
+        Copy-Item "$src/VocabSpire.dll"           $dst/
+        Copy-Item "$src/VocabSpire.pdb"           $dst/
+        Copy-Item "$src/VocabSpire.json"          $dst/
+        Copy-Item "$src/VocabSpire.deps.json"     $dst/
+        Copy-Item "$src/VocabSpire.runtimeconfig.json" $dst/
+        Copy-Item "$src/GodotSharp.dll"           $dst/
+        Copy-Item "$src/ZstdSharp.dll"            $dst/
+        Copy-Item "VocabSpire/vocab_icon.png"     $dst/
+        Copy-Item "VocabSpire/Resources/wordbanks/*.json" "$dst/wordbanks/"
+        Copy-Item "VocabSpire/Resources/wordbanks/*.csv"  "$dst/wordbanks/"
+        Compress-Archive -Path "$dst/*" -DestinationPath "publish/VocabSpire.zip"
+
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
         name: VocabSpire
-        path: VocabSpire/.godot/mono/temp/bin/Release/VocabSpire.dll
+        path: publish/VocabSpire.zip
