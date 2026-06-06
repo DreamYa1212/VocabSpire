@@ -11,12 +11,12 @@
   <!-- Directory.Build.props is auto-imported by SDK -->
 
   <ItemGroup>
-    <Reference Include="sts2" Condition="Exists('$(STS2GamePath)\sts2.dll')">
-      <HintPath>$(STS2GamePath)\sts2.dll</HintPath>
+    <Reference Include="sts2">
+      <HintPath>..\libs\sts2.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="0Harmony" Condition="Exists('$(STS2GamePath)\0Harmony.dll')">
-      <HintPath>$(STS2GamePath)\0Harmony.dll</HintPath>
+    <Reference Include="0Harmony">
+      <HintPath>..\libs\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
