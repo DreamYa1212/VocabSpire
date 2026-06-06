@@ -14,9 +14,9 @@ public enum SrsState
 public enum SrsGrade
 {
     Again = 0,  // 完全忘记
-    Hard  = 1,  // 困难（勉强想起）
-    Good  = 2,  // 一般（正常回忆）
-    Easy  = 3   // 容易（毫不费力）
+    Hard = 1,  // 困难（勉强想起）
+    Good = 2,  // 一般（正常回忆）
+    Easy = 3   // 容易（毫不费力）
 }
 
 public sealed class WordEntry
@@ -25,6 +25,9 @@ public sealed class WordEntry
     public string Chinese { get; init; } = "";
     public string Phonetic { get; init; } = "";
     public List<string> Definitions { get; init; } = new();
+
+    /// <summary>所属词库 Id，用于 SaveProgress 定位正确的进度文件。</summary>
+    public string BankId { get; set; } = "";
 
     public bool HasMultipleDefinitions => Definitions.Count > 1;
     public bool HasPhonetic => !string.IsNullOrWhiteSpace(Phonetic);

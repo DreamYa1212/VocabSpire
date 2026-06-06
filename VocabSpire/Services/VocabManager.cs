@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Runs;
 using VocabSpire.Models;
@@ -45,6 +46,12 @@ public sealed class VocabManager
         return wordbanksDir;
     }
 
+    private static void AssignBankIdToWords(WordBank bank)
+    {
+        foreach (var w in bank.Words)
+            w.BankId = bank.Id;
+    }
+
     public void LoadAllBanks()
     {
         _banks.Clear();
@@ -58,6 +65,7 @@ public sealed class VocabManager
             var bank = FileParser.ParseJson(file);
             if (bank is not null)
             {
+                AssignBankIdToWords(bank);
                 _banks.Add(bank);
                 Log.Info($"[VocabSpire] Loaded: {bank.Name} ({bank.TotalWords} words)");
             }
@@ -69,6 +77,7 @@ public sealed class VocabManager
             var bank = FileParser.ParseCsv(file);
             if (bank is not null)
             {
+                AssignBankIdToWords(bank);
                 _banks.Add(bank);
                 Log.Info($"[VocabSpire] Loaded: {bank.Name} ({bank.TotalWords} words)");
             }
@@ -107,6 +116,26 @@ public sealed class VocabManager
             VocabConfig.Instance.ActiveBankId = bankId;
             VocabConfig.Instance.Save();
             Log.Info($"[VocabSpire] Active bank: {_activeBank.Name}");
+
+            // 重新初始化分组（基于新词库）
+            RegenerateGroups();
+            var savedGroupIndex = VocabConfig.Instance.ActiveGroupIndex;
+            if (savedGroupIndex >= 0 && savedGroupIndex < _wordGroups.Count)
+                SelectGroup(savedGroupIndex);
+
+            // 如果在战斗中，重新初始化战斗词池（基于新词库）
+            try
+            {
+                if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress)
+                {
+                    InitCombatFixedWordPool();
+                    Log.Info($"[VocabSpire] Combat pool re-initialized for new bank: {_activeBank.Name}");
+                }
+            }
+            catch
+            {
+                // CombatManager 不可用时忽略
+            }
         }
     }
 
@@ -141,10 +170,12 @@ public sealed class VocabManager
         var existingIdx = _banks.FindIndex(b => b.Id == bank.Id);
         if (existingIdx >= 0)
         {
+            AssignBankIdToWords(bank);
             _banks[existingIdx] = bank;
         }
         else
         {
+            AssignBankIdToWords(bank);
             _banks.Add(bank);
         }
 
@@ -400,10 +431,10 @@ public sealed class VocabManager
 
     private string? _lastAnsweredWord;
 
-    public void RecordAnswer(WordEntry word, bool correct, WordBank? bankOverride = null)
+    public void RecordAnswer(WordEntry word, bool correct)
     {
         Log.Info($"[VocabSpire] RecordAnswer: word='{word.English}' correct={correct} " +
-                 $"cc_before={word.CorrectCount} bs_before={word.BestStreak}");
+                 $"cc_before={word.CorrectCount} bs_before={word.BestStreak} bankId={word.BankId}");
         _lastAnsweredWord = word.English.ToLowerInvariant();
         if (correct)
         {
@@ -424,8 +455,12 @@ public sealed class VocabManager
         if (correct) VocabConfig.Instance.TotalCorrect++;
         VocabConfig.Instance.Save();
 
-        // 持久化单词进度（保存到该单词所属的词库文件）
-        SaveProgress(bankOverride ?? _activeBank ?? _banks[0]);
+        // 持久化单词进度（根据 WordEntry.BankId 定位正确的词库文件）
+        var targetBank = _banks.FirstOrDefault(b => b.Id == word.BankId);
+        if (targetBank is not null)
+            SaveProgress(targetBank);
+        else
+            Log.Warn($"[VocabSpire] RecordAnswer: no bank found for BankId='{word.BankId}', skipping save.");
 
         // 分组达标检测
         CheckGroupMastered();
@@ -556,70 +591,61 @@ public sealed class VocabManager
 
     public void LoadProgress()
     {
-        try
+        // 加载所有词库的进度，确保切词库时进度不丢失
+        foreach (var bank in _banks)
         {
-            var bank = _activeBank;
-            if (bank is null)
-            {
-                Log.Warn("[VocabSpire] LoadProgress: no active bank, skipping.");
-                return;
-            }
-
-            var path = GetProgressFilePath(bank);
-            Log.Info($"[VocabSpire] LoadProgress from {path} (exists={File.Exists(path)})");
-            if (!File.Exists(path)) return;
-
-            var json = File.ReadAllText(path);
-            // 尝试新格式 (Dictionary<string, object>)，失败则回退旧格式 (int[])
             try
             {
-                var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>>(json);
-                if (data is null) return;
+                var path = GetProgressFilePath(bank);
+                if (!File.Exists(path)) continue;
 
-                foreach (var w in bank.Words)
+                var json = File.ReadAllText(path);
+                // 尝试新格式 (Dictionary<string, object>)，失败则回退旧格式 (int[])
+                try
                 {
-                    var key = w.English.ToLowerInvariant();
-                    if (!data.TryGetValue(key, out var entry)) continue;
+                    var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>>(json);
+                    if (data is null) continue;
 
-                    w.CorrectCount = entry.TryGetValue("cc", out var cc) && cc.TryGetInt32(out var ccv) ? ccv : 0;
-                    w.WrongCount = entry.TryGetValue("wc", out var wc) && wc.TryGetInt32(out var wcv) ? wcv : 0;
-                    w.EnergyLost = entry.TryGetValue("el", out var el) && el.TryGetInt32(out var elv) ? elv : 0;
-                    w.Streak = entry.TryGetValue("st", out var st) && st.TryGetInt32(out var stv) ? stv : 0;
-                    w.BestStreak = entry.TryGetValue("bs", out var bs) && bs.TryGetInt32(out var bsv) ? bsv : w.Streak;
-                    // SM-2 fields (optional, default if missing for backward compat)
-                    w.SrsState = entry.TryGetValue("srs", out var srs) && srs.TryGetInt32(out var srsv)
-                        ? (SrsState)srsv : SrsState.New;
-                    w.EaseFactor = entry.TryGetValue("ef", out var ef) && ef.TryGetSingle(out var efv)
-                        ? efv : SrsScheduler.DefaultEaseFactor;
-                    w.IntervalDays = entry.TryGetValue("iv", out var iv) && iv.TryGetInt32(out var ivv) ? ivv : 0;
-                    w.Repetitions = entry.TryGetValue("rp", out var rp) && rp.TryGetInt32(out var rpv) ? rpv : 0;
-                    w.DueDateTicks = entry.TryGetValue("dd", out var dd) && dd.TryGetInt64(out var ddv) ? ddv : 0;
-                    w.LastReviewTicks = entry.TryGetValue("lr", out var lr) && lr.TryGetInt64(out var lrv) ? lrv : 0;
-                    w.LearningStepIndex = entry.TryGetValue("ls", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 0;
+                    foreach (var w in bank.Words)
+                    {
+                        var key = w.English.ToLowerInvariant();
+                        if (!data.TryGetValue(key, out var entry)) continue;
+
+                        w.CorrectCount = entry.TryGetValue("cc", out var cc) && cc.TryGetInt32(out var ccv) ? ccv : 0;
+                        w.WrongCount = entry.TryGetValue("wc", out var wc) && wc.TryGetInt32(out var wcv) ? wcv : 0;
+                        w.EnergyLost = entry.TryGetValue("el", out var el) && el.TryGetInt32(out var elv) ? elv : 0;
+                        w.Streak = entry.TryGetValue("st", out var st) && st.TryGetInt32(out var stv) ? stv : 0;
+                        w.BestStreak = entry.TryGetValue("bs", out var bs) && bs.TryGetInt32(out var bsv) ? bsv : w.Streak;
+                        w.SrsState = entry.TryGetValue("srs", out var srs) && srs.TryGetInt32(out var srsv)
+                            ? (SrsState)srsv : SrsState.New;
+                        w.EaseFactor = entry.TryGetValue("ef", out var ef) && ef.TryGetSingle(out var efv)
+                            ? efv : SrsScheduler.DefaultEaseFactor;
+                        w.IntervalDays = entry.TryGetValue("iv", out var iv) && iv.TryGetInt32(out var ivv) ? ivv : 0;
+                        w.Repetitions = entry.TryGetValue("rp", out var rp) && rp.TryGetInt32(out var rpv) ? rpv : 0;
+                        w.DueDateTicks = entry.TryGetValue("dd", out var dd) && dd.TryGetInt64(out var ddv) ? ddv : 0;
+                        w.LastReviewTicks = entry.TryGetValue("lr", out var lr) && lr.TryGetInt64(out var lrv) ? lrv : 0;
+                        w.LearningStepIndex = entry.TryGetValue("ls", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 0;
+                    }
+
+                    Log.Info($"[VocabSpire] Loaded progress for '{bank.Name}' ({data.Count} words).");
                 }
-
-                Log.Info($"[VocabSpire] Loaded SRS progress for {data.Count} words.");
+                catch (System.Text.Json.JsonException)
+                {
+                    LoadProgressLegacy(json, bank);
+                }
             }
-            catch (System.Text.Json.JsonException)
+            catch (Exception ex)
             {
-                // 回退旧格式：int[] 兼容
-                LoadProgressLegacy(json);
+                Log.Error($"[VocabSpire] Failed to load progress for '{bank.Name}': {ex.Message}");
             }
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[VocabSpire] Failed to load progress: {ex.Message}");
         }
     }
 
     /// <summary>兼容旧版 int[] 格式的进度加载。</summary>
-    private void LoadProgressLegacy(string json)
+    private void LoadProgressLegacy(string json, WordBank bank)
     {
         var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int[]>>(json);
         if (data is null) return;
-
-        var bank = _activeBank;
-        if (bank is null) return;
 
         foreach (var w in bank.Words)
         {
@@ -816,12 +842,24 @@ public sealed class VocabManager
         VocabConfig.Instance.ActiveGroupIndex = groupIndex;
         VocabConfig.Instance.Save();
         Log.Info($"[VocabSpire] Active group: {group.Label} ({group.RangeText}, {group.Count} words).");
+
+        // 如果在战斗中，重新初始化战斗词池（基于新词组）
+        try
+        {
+            if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress)
+            {
+                InitCombatFixedWordPool();
+                Log.Info($"[VocabSpire] Combat pool re-initialized for new group: {group.Label}");
+            }
+        }
+        catch { }
     }
 
     /// <summary>刷新所有分组的进度统计，使用图鉴标准（Streak >= MasteryStreak）。</summary>
     public void RefreshGroupStats()
     {
         if (_activeBank is null) return;
+        if (_shuffledIndices.Length == 0) return;
         var masteryThreshold = VocabConfig.Instance.MasteryStreak;
         foreach (var group in _wordGroups)
         {

@@ -451,7 +451,7 @@ public partial class QuizPanel : Control
     {
         if (_currentQuestion is null) return;
 
-        VocabManager.Instance.RecordAnswer(_currentQuestion.TargetWord, correct, _currentBank);
+        VocabManager.Instance.RecordAnswer(_currentQuestion.TargetWord, correct);
 
         var cfg = VocabConfig.Instance;
         var autoClose = correct && (cfg.AutoSubmitCorrect || cfg.SrsAutoContinueCorrectOnly);
@@ -500,7 +500,7 @@ public partial class QuizPanel : Control
         // 客观答错 �?SM-2 强制�?Again 处理（不管用户�?Hard 还是 Again�?
         var effectiveGrade = _lastCorrect ? grade : SrsGrade.Again;
         var correct = _lastCorrect;
-        VocabManager.Instance.RecordAnswer(word, correct, _currentBank);
+        VocabManager.Instance.RecordAnswer(word, correct);
 
         if (VocabConfig.Instance.EnableSrsMode)
             SrsScheduler.Grade(word, effectiveGrade);
