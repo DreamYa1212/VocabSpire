@@ -12,8 +12,9 @@ public sealed class QuizGenerator
     /// <summary>最近出过的单词队列，用于防止短期内重复出题。</summary>
     private readonly Queue<WordEntry> _recentWords = new();
 
-    /// <summary>防重窗口大小：词库词数的 1/3，上限 20，下限 3。</summary>
-    private static int GetCooldownSize(int bankSize) => Math.Clamp(bankSize / 3, 3, 20);
+    // mini-cooldown 防连续窗口由 VocabConfig.MiniCooldown 配置（设置面板可调，默认 3）。
+
+    // 新词节流上限由 VocabConfig.NewWordLimit 配置（设置面板可调，默认 15）。
 
     /// <summary>
     /// 生成一道题。tier: 1-3 对应 Act 层级（难度递增）。
@@ -87,9 +88,9 @@ public sealed class QuizGenerator
             if (pct > 0)
             {
                 var spellChance = pct / 100.0;
-                // 已掌握的词额外 +20%（用户基础概率 > 0 时才叠加）
-                if (target.CorrectCount > 2 && target.Accuracy > 0.7f)
-                    spellChance += 0.20;
+                // ④ 难度随掌握度：Box 越高（越接近掌握）越倾向升级为拼写（更难的产出性回忆）。
+                if (target.Box >= 3)
+                    spellChance += (target.Box - 2) * 0.15; // Box3 +15% / Box4 +30% / Box5 +45%
                 if (_random.NextDouble() < spellChance)
                     chosen = QuizModeFlags.SpellEnglish;
             }
@@ -668,24 +669,50 @@ public sealed class QuizGenerator
 
     // ── 加权选词（含防重复冷却）──
 
+    /// <summary>
+    /// 间隔重复调度选词（① + ⑥扩展式 + ③新词节流）：
+    /// 到期(DueTick≤tick)的词按 Box 低 + 过期久 加权优先 —— 没掌握的反复重现凑 6-10 次，
+    /// 掌握的按扩展间隔少出；新词受节流，先巩固已学；mini-cooldown 只防连续两张同词。
+    /// </summary>
     private WordEntry SelectWeightedWord(List<WordEntry> words)
     {
-        var cooldownSize = GetCooldownSize(words.Count);
+        long tick = VocabConfig.Instance.TotalAnswered;          // 全局调度时钟（题数，session 内）
+        long nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds(); // 真实时间（毕业词跨天用）
         var recentSet = new HashSet<WordEntry>(_recentWords);
+
+        // ③ 新词节流：学习中的词（见过但 Box<2 未掌握）达上限 → 暂不引入新词
+        int learning = words.Count(w => w.Seen && w.Box < 2);
+        bool allowNew = learning < VocabConfig.Instance.NewWordLimit;
 
         var weights = words.Select(w =>
         {
-            // 冷却窗口内的词权重设为 0，强制不重复
-            if (recentSet.Contains(w)) return 0.0;
+            if (recentSet.Contains(w)) return 0.0;               // 刚出过，防连续重复
 
-            var total = w.CorrectCount + w.WrongCount;
-            if (total == 0) return 3.0;
-            return Math.Max(0.5, 3.0 * (1.0 - w.Accuracy));
+            if (!w.Seen)
+                return allowNew ? 2.0 : 0.0;                     // 新词：节流满时不引入
+
+            // 毕业词（Box≥3）：宽容跨天——按真实天数判断「搁久了该复习」，到期不玩不堆债
+            if (w.Box >= 3)
+            {
+                long daysSince = (nowSec - w.LastSeenDate) / 86400;
+                int dueDays = VocabConfig.Instance.IntervalDaysFor(w.Box);
+                if (daysSince >= dueDays)
+                    return 4.0 + Math.Min((daysSince - dueDays) * 0.5, 4.0); // 搁够→优先重现，搁越久略高（不爆炸）
+                return 0.02;                                     // 没到期：基本不出，让位给没掌握的词
+            }
+
+            // 学习中（Box<3）：session 内题数间隔，没掌握的反复重现凑 6-10 次
+            long overdue = tick - w.DueTick;
+            if (overdue >= 0)
+            {
+                double boxFactor = 6 - w.Box;                    // Box0→6 … Box2→4
+                double overdueFactor = 1.0 + Math.Min(overdue / 5.0, 3.0);
+                return boxFactor * overdueFactor;
+            }
+            return 0.05;                                         // 未到期：极低权重兜底
         }).ToList();
 
         var totalWeight = weights.Sum();
-
-        // 如果所有词都在冷却中（词库极小），清空冷却重来
         if (totalWeight <= 0)
         {
             _recentWords.Clear();
@@ -693,7 +720,6 @@ public sealed class QuizGenerator
         }
 
         var roll = _random.NextDouble() * totalWeight;
-
         var cumulative = 0.0;
         WordEntry selected = words[^1];
         for (var i = 0; i < words.Count; i++)
@@ -706,9 +732,9 @@ public sealed class QuizGenerator
             }
         }
 
-        // 记入冷却队列
+        // mini-cooldown 窗口=3，让「间隔重现」成为主力（而非原来 bankSize/3 上限20 的长屏蔽）
         _recentWords.Enqueue(selected);
-        while (_recentWords.Count > cooldownSize)
+        while (_recentWords.Count > VocabConfig.Instance.MiniCooldown)
             _recentWords.Dequeue();
 
         return selected;

@@ -436,23 +436,30 @@ public sealed class VocabManager
         Log.Info($"[VocabSpire] RecordAnswer: word='{word.English}' correct={correct} " +
                  $"cc_before={word.CorrectCount} bs_before={word.BestStreak} bankId={word.BankId}");
         _lastAnsweredWord = word.English.ToLowerInvariant();
+
+        VocabConfig.Instance.TotalAnswered++;          // 全局 tick 前进（复用为间隔重复调度时钟）
+        if (correct) VocabConfig.Instance.TotalCorrect++;
+        long tick = VocabConfig.Instance.TotalAnswered;
+
         if (correct)
         {
             word.CorrectCount++;
             word.Streak++;
             if (word.Streak > word.BestStreak)
                 word.BestStreak = word.Streak;
+            word.Box = Math.Min(5, word.Box + 1);      // 升盒 → 拉长复习间隔
         }
         else
         {
             word.WrongCount++;
-            word.Streak = 0; // 答错归零
+            word.Streak = 0;                           // 答错归零
+            word.Box = Math.Max(0, word.Box - 2);      // 降盒 → 很快重现
         }
+        word.DueTick = tick + VocabConfig.Instance.IntervalFor(word.Box);
+        word.LastSeenDate = DateTimeOffset.UtcNow.ToUnixTimeSeconds();  // 记真实时间（毕业词跨天复习用）
 
         _testedWordsThisRun.Add(word.English.ToLowerInvariant());
 
-        VocabConfig.Instance.TotalAnswered++;
-        if (correct) VocabConfig.Instance.TotalCorrect++;
         VocabConfig.Instance.Save();
 
         // 持久化单词进度（根据 WordEntry.BankId 定位正确的词库文件）
@@ -530,33 +537,16 @@ public sealed class VocabManager
             var path = GetProgressFilePath(bank);
             Log.Info($"[VocabSpire] SaveProgress -> {path}");
 
-            var data = new Dictionary<string, Dictionary<string, object>>();
+            var data = new Dictionary<string, long[]>();
             foreach (var w in bank.Words)
             {
                 // 跳过无任何进度的词
                 if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0
-                    && w.BestStreak == 0
-                    && w.SrsState == SrsState.New && w.EaseFactor == SrsScheduler.DefaultEaseFactor)
+                    && w.Box == 0 && w.DueTick == 0)
                     continue;
 
                 var key = w.English.ToLowerInvariant();
-                var entry = new Dictionary<string, object>
-                {
-                    ["cc"] = w.CorrectCount,
-                    ["wc"] = w.WrongCount,
-                    ["el"] = w.EnergyLost,
-                    ["st"] = w.Streak,
-                    ["bs"] = w.BestStreak,
-                    // SM-2 fields
-                    ["srs"] = (int)w.SrsState,
-                    ["ef"] = w.EaseFactor,
-                    ["iv"] = w.IntervalDays,
-                    ["rp"] = w.Repetitions,
-                    ["dd"] = w.DueDateTicks,
-                    ["lr"] = w.LastReviewTicks,
-                    ["ls"] = w.LearningStepIndex
-                };
-                data[key] = entry;
+                data[key] = new long[] { w.CorrectCount, w.WrongCount, w.EnergyLost, w.Streak, w.Box, w.DueTick, w.LastSeenDate };
             }
             var json = System.Text.Json.JsonSerializer.Serialize(data,
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
@@ -600,31 +590,23 @@ public sealed class VocabManager
                 if (!File.Exists(path)) continue;
 
                 var json = File.ReadAllText(path);
-                // 尝试新格式 (Dictionary<string, object>)，失败则回退旧格式 (int[])
+                // 尝试新格式 (Dictionary<string, long[]>)
                 try
                 {
-                    var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>>(json);
+                    var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, long[]>>(json);
                     if (data is null) continue;
 
                     foreach (var w in bank.Words)
                     {
                         var key = w.English.ToLowerInvariant();
-                        if (!data.TryGetValue(key, out var entry)) continue;
-
-                        w.CorrectCount = entry.TryGetValue("cc", out var cc) && cc.TryGetInt32(out var ccv) ? ccv : 0;
-                        w.WrongCount = entry.TryGetValue("wc", out var wc) && wc.TryGetInt32(out var wcv) ? wcv : 0;
-                        w.EnergyLost = entry.TryGetValue("el", out var el) && el.TryGetInt32(out var elv) ? elv : 0;
-                        w.Streak = entry.TryGetValue("st", out var st) && st.TryGetInt32(out var stv) ? stv : 0;
-                        w.BestStreak = entry.TryGetValue("bs", out var bs) && bs.TryGetInt32(out var bsv) ? bsv : w.Streak;
-                        w.SrsState = entry.TryGetValue("srs", out var srs) && srs.TryGetInt32(out var srsv)
-                            ? (SrsState)srsv : SrsState.New;
-                        w.EaseFactor = entry.TryGetValue("ef", out var ef) && ef.TryGetSingle(out var efv)
-                            ? efv : SrsScheduler.DefaultEaseFactor;
-                        w.IntervalDays = entry.TryGetValue("iv", out var iv) && iv.TryGetInt32(out var ivv) ? ivv : 0;
-                        w.Repetitions = entry.TryGetValue("rp", out var rp) && rp.TryGetInt32(out var rpv) ? rpv : 0;
-                        w.DueDateTicks = entry.TryGetValue("dd", out var dd) && dd.TryGetInt64(out var ddv) ? ddv : 0;
-                        w.LastReviewTicks = entry.TryGetValue("lr", out var lr) && lr.TryGetInt64(out var lrv) ? lrv : 0;
-                        w.LearningStepIndex = entry.TryGetValue("ls", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 0;
+                        if (!data.TryGetValue(key, out var stats)) continue;
+                        w.CorrectCount = stats.Length > 0 ? (int)stats[0] : 0;
+                        w.WrongCount = stats.Length > 1 ? (int)stats[1] : 0;
+                        w.EnergyLost = stats.Length > 2 ? (int)stats[2] : 0;
+                        w.Streak = stats.Length > 3 ? (int)stats[3] : 0;
+                        w.Box = stats.Length > 4 ? (int)stats[4] : 0;
+                        w.DueTick = stats.Length > 5 ? stats[5] : 0;
+                        w.LastSeenDate = stats.Length > 6 ? stats[6] : 0;
                     }
 
                     Log.Info($"[VocabSpire] Loaded progress for '{bank.Name}' ({data.Count} words).");
