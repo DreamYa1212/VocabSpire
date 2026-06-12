@@ -542,11 +542,23 @@ public sealed class VocabManager
             {
                 // 跳过无任何进度的词
                 if (w.CorrectCount == 0 && w.WrongCount == 0 && w.EnergyLost == 0
-                    && w.Box == 0 && w.DueTick == 0)
+                    && w.Box == 0 && w.DueTick == 0 && w.BestStreak == 0)
                     continue;
 
                 var key = w.English.ToLowerInvariant();
-                data[key] = new long[] { w.CorrectCount, w.WrongCount, w.EnergyLost, w.Streak, w.Box, w.DueTick, w.LastSeenDate };
+                data[key] = new long[]
+                {
+                    w.CorrectCount,
+                    w.WrongCount,
+                    w.EnergyLost,
+                    w.Streak,
+                    w.BestStreak,
+                    w.Box,
+                    w.DueTick,
+                    w.LastSeenDate,
+                    w.DueDateTicks,
+                    w.LastReviewTicks
+                };
             }
             var json = System.Text.Json.JsonSerializer.Serialize(data,
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
@@ -604,9 +616,12 @@ public sealed class VocabManager
                         w.WrongCount = stats.Length > 1 ? (int)stats[1] : 0;
                         w.EnergyLost = stats.Length > 2 ? (int)stats[2] : 0;
                         w.Streak = stats.Length > 3 ? (int)stats[3] : 0;
-                        w.Box = stats.Length > 4 ? (int)stats[4] : 0;
-                        w.DueTick = stats.Length > 5 ? stats[5] : 0;
-                        w.LastSeenDate = stats.Length > 6 ? stats[6] : 0;
+                        w.BestStreak = stats.Length > 4 ? (int)stats[4] : 0;
+                        w.Box = stats.Length > 5 ? (int)stats[5] : 0;
+                        w.DueTick = stats.Length > 6 ? stats[6] : 0;
+                        w.LastSeenDate = stats.Length > 7 ? stats[7] : 0;
+                        w.DueDateTicks = stats.Length > 8 ? stats[8] : 0;
+                        w.LastReviewTicks = stats.Length > 9 ? stats[9] : 0;
                     }
 
                     Log.Info($"[VocabSpire] Loaded progress for '{bank.Name}' ({data.Count} words).");
